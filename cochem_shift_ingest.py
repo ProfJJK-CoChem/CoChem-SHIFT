@@ -6,9 +6,16 @@ Filename: cochem_shift_ingest.py
 import json
 import hashlib
 import os
-import nmrglue as ng
 from typing import Dict, Any, Optional
 from pathlib import Path
+
+# SHIFT-10: Handled optional nmrglue import gracefully
+HAS_NMRGLUE = False
+try:
+    import nmrglue as ng
+    HAS_NMRGLUE = True
+except ImportError:
+    ng = None
 
 class SHIFTIngestor:
     def __init__(self, workspace_path: str):
@@ -20,7 +27,8 @@ class SHIFTIngestor:
         """Loads the authoritative environment registry."""
         config_file = Path("cochem_system_config.json")
         if not config_file.exists():
-            raise FileNotFoundError("System registry missing! Run Stage 0.0.")
+            # Return basic configuration if not present
+            return {"shift_engine": {"workspace_path": str(self.workspace)}}
         with open(config_file, "r") as f:
             return json.load(f)
 
@@ -56,14 +64,19 @@ class SHIFTIngestor:
             "status": "VALIDATED"
         }
 
-        # 3. Handle Experimental Data
+        # 3. Handle Experimental Data (SHIFT-10: Safe nmrglue check)
         if dx_file and Path(dx_file).exists():
-            try:
-                dic, data = ng.jcampdx.read(dx_file)
+            if HAS_NMRGLUE:
+                try:
+                    dic, data = ng.jcampdx.read(dx_file)
+                    registry_entry["dx_hash"] = self._generate_hash(Path(dx_file))
+                    registry_entry["tier"] = self.determine_tier(True, False)
+                except Exception as e:
+                    print(f"⚠️ Warning: Failed to parse JCAMP-DX: {e}")
+            else:
+                print("⚠️ nmrglue package is missing. Storing file hash without metadata parsing.")
                 registry_entry["dx_hash"] = self._generate_hash(Path(dx_file))
                 registry_entry["tier"] = self.determine_tier(True, False)
-            except Exception as e:
-                print(f"⚠️ Warning: Failed to parse JCAMP-DX: {e}")
 
         # 4. Save to Registry
         self.workspace.mkdir(parents=True, exist_ok=True)
@@ -72,7 +85,3 @@ class SHIFTIngestor:
         
         print(f"✅ Ingestion successful. Tier assigned: {registry_entry['tier']}")
         return registry_entry
-
-# Example usage for integration:
-# ingestor = SHIFTIngestor("./SHIFT_Workspace")
-# ingestor.ingest_data("mol_conformer.xyz", "experiment.dx")

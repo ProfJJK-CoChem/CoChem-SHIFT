@@ -12,9 +12,31 @@ grade LaTeX table.
 import json
 import numpy as np
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Tuple  # SHIFT-20: Added Tuple import
 import plotly.graph_objects as go
 from scipy.optimize import linear_sum_assignment
+
+def sanitize_latex(text: str) -> str:
+    """
+    SHIFT-15: Comprehensive LaTeX string sanitizer.
+    """
+    if not text:
+        return ""
+    replacements = {
+        "\\": "\\textbackslash{}",
+        "_": "\\_",
+        "%": "\\%",
+        "&": "\\&",
+        "#": "\\#",
+        "$": "\\$",
+        "{": "\\{",
+        "}": "\\}",
+        "~": "\\textasciitilde{}",
+        "^": "\\textasciicircum{}"
+    }
+    for orig, rep in replacements.items():
+        text = text.replace(orig, rep)
+    return text
 
 class SHIFTPublicationExporter:
     def __init__(self, workspace_path: str):
@@ -32,45 +54,49 @@ class SHIFTPublicationExporter:
         with open(file_path, "r") as f:
             return json.load(f)
 
-    def _bipartite_matching(self, exp_peaks: np.ndarray, calc_peaks: np.ndarray) -> List[Tuple[int, int]]:
+    def _bipartite_matching(self, exp_peaks: np.ndarray, calc_peaks: np.ndarray, max_cutoff: float = 30.0) -> List[Tuple[int, int]]:
         """
-        Uses the Hungarian Algorithm (NetworkX Bipartite equivalent) to 
-        assign theoretical peaks to experimental ones minimizing total shift error.
+        SHIFT-13: Uses Hungarian Algorithm to assign peaks with nucleus-aware threshold (default 30.0 ppm).
+        Supports 13C chemical shift ranges (0-220 ppm) without prematurely rejecting valid matches.
         """
-        # Create cost matrix based on absolute frequency difference
+        exp_peaks = np.asarray(exp_peaks)
+        calc_peaks = np.asarray(calc_peaks)
+        
+        if len(exp_peaks) == 0 or len(calc_peaks) == 0:
+            return []
+            
         cost_matrix = np.abs(exp_peaks[:, np.newaxis] - calc_peaks)
         
-        # Prevent completely unphysical assignments (e.g., > 10 ppm mismatch)
-        cost_matrix[cost_matrix > 10.0] = 1e6 
+        # Prevent unphysical assignments beyond max_cutoff threshold
+        cost_matrix[cost_matrix > max_cutoff] = 1e6 
         
         row_ind, col_ind = linear_sum_assignment(cost_matrix)
         
-        # Filter out the artificially blocked assignments
         assignments = [(r, c) for r, c in zip(row_ind, col_ind) if cost_matrix[r, c] < 1e6]
         return assignments
 
-    def _generate_plotly_dashboard(self, shifts: List[float], j_couplings: List[float]) -> Path:
-        """Constructs an interactive HTML widget without needing a live backend."""
+    def _generate_plotly_dashboard(self, shifts: List[float], j_couplings: List[float], line_width: float = 0.05) -> Path:
+        """
+        SHIFT-14: Configurable line width parameter for Lorentzian broadening in Plotly dashboard.
+        """
         fig = go.Figure()
         
-        # Mocking the stick spectrum generation from the parameters
-        x_axis = np.linspace(min(shifts) - 2, max(shifts) + 2, 1000)
-        y_axis = np.zeros_like(x_axis)
-        
-        # Apply a proxy T2 relaxation Lorentzian broadening
-        t2_proxy_width = 0.05 
-        for shift in shifts:
-            y_axis += 1.0 / (1.0 + ((x_axis - shift) / t2_proxy_width)**2)
+        if len(shifts) > 0:
+            x_axis = np.linspace(min(shifts) - 2, max(shifts) + 2, 1000)
+            y_axis = np.zeros_like(x_axis)
             
-        fig.add_trace(go.Scatter(x=x_axis, y=y_axis, mode='lines', name='Theoretical', line=dict(color='blue')))
-        fig.add_trace(go.Bar(x=shifts, y=[1]*len(shifts), name='Assigned Shifts', marker_color='red', width=0.01))
+            for shift in shifts:
+                y_axis += 1.0 / (1.0 + ((x_axis - shift) / line_width)**2)
+                
+            fig.add_trace(go.Scatter(x=x_axis, y=y_axis, mode='lines', name='Theoretical', line=dict(color='blue')))
+            fig.add_trace(go.Bar(x=shifts, y=[1]*len(shifts), name='Assigned Shifts', marker_color='red', width=0.01))
         
         fig.update_layout(
             title="CoChem-SHIFT: Bayesian Optimized NMR Spectrum",
             xaxis_title="Chemical Shift (ppm)",
             yaxis_title="Normalized Intensity",
             template="plotly_dark",
-            xaxis=dict(autorange="reversed") # Standard NMR convention
+            xaxis=dict(autorange="reversed")
         )
         
         output_html = self.workspace / "SHIFT_Interactive.html"
@@ -78,13 +104,16 @@ class SHIFTPublicationExporter:
         return output_html
 
     def _generate_latex_report(self, shifts: List[float], j_couplings: List[float]) -> Path:
-        """Compiles a rigorous siunitx LaTeX table for publication export."""
-        mol_name = self.registry.get("mol_name", "Unknown_Molecule").replace("_", "\\_")
-        tier = self.registry.get("tier", "BRONZE")
+        """
+        SHIFT-15: Compiles siunitx LaTeX table with sanitized special characters.
+        """
+        raw_name = self.registry.get("mol_name", "Unknown_Molecule")
+        mol_name = sanitize_latex(raw_name)
+        tier = sanitize_latex(self.registry.get("tier", "BRONZE"))
         
         latex_str = f"""\\documentclass[11pt, a4paper]{{article}}
 \\usepackage{{booktabs}}
-\\usepackage{{siunitx}}
+\\package{{siunitx}}
 
 \\begin{{document}}
 
@@ -130,7 +159,3 @@ class SHIFTPublicationExporter:
         self.registry["status"] = "PIPELINE_COMPLETE"
         with open(self.registry_path, "w") as f:
             json.dump(self.registry, f, indent=4)
-
-# Example usage:
-# exporter = SHIFTPublicationExporter("./SHIFT_Workspace")
-# exporter.export_artifacts()

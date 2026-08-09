@@ -23,23 +23,26 @@ class JAXSpinHamiltonian:
     def __init__(self, workspace_path: str, n_spins: int, connectivity_matrix: np.ndarray = None):
         """
         Initializes the spin operators for a given number of spin-1/2 nuclei.
-        Strictly limits N to prevent exponential RAM exhaustion.
+        SHIFT-08: Clear spin limit explanation and weak-coupling options.
+        SHIFT-09: Pre-computes two-body spin product operators I_dot[i, j] to avoid O(N^2) JIT loop dot products.
         """
         self.workspace = Path(workspace_path)
         self.n = n_spins
         
-        # Guard against OOM (2^13 = 8192 x 8192 matrices = ~1.6GB per operator)
+        # SHIFT-08: Direct diagonalization limit explanation
         if self.n > 12:
-            raise MemoryError(f"❌ Spin system too large (N={self.n}). Direct diagonalization limit is 12. "
-                              "Enable the Spin-Decoupling Override in Stage 1 to fragment the system.")
+            raise MemoryError(f"Spin system size N={self.n} exceeds direct Hilbert space limit (2^{self.n} = {2**self.n}). "
+                              "For N > 12, use weak-coupling block-diagonalization sub-spin partitioning.")
             
         print(f"⚙️ Initializing JAX Spin-1/2 Operators for N={self.n}...")
         self._build_operators()
         self.topological_mask = self._build_topological_mask(connectivity_matrix)
 
     def _build_operators(self):
-        """Builds multi-spin Pauli matrices using Kronecker tensor products."""
-        # Spin-1/2 fundamental Pauli matrices
+        """
+        Builds multi-spin Pauli matrices using Kronecker tensor products.
+        SHIFT-09: Pre-computes two-body dot product operators I_xi I_xj + I_yi I_yj + I_zi I_zj.
+        """
         I = np.eye(2, dtype=np.complex128)
         Sx = np.array([[0, 1], [1, 0]], dtype=np.complex128) * 0.5
         Sy = np.array([[0, -1j], [1j, 0]], dtype=np.complex128) * 0.5
@@ -62,11 +65,20 @@ class JAXSpinHamiltonian:
             self.Iy[i] = op_y
             self.Iz[i] = op_z
 
+        # SHIFT-09: Pre-compute two-body spin product operators I_dot[i, j]
+        self.I_dot = np.zeros((self.n, self.n, dim, dim), dtype=np.complex128)
+        for i in range(self.n):
+            for j in range(i + 1, self.n):
+                dot_op = self.Ix[i] @ self.Ix[j] + self.Iy[i] @ self.Iy[j] + self.Iz[i] @ self.Iz[j]
+                self.I_dot[i, j] = dot_op
+                self.I_dot[j, i] = dot_op
+
         # Transfer cached arrays directly to GPU/Accelerator via JAX
         self.j_Ix = jax.device_put(self.Ix)
         self.j_Iy = jax.device_put(self.Iy)
         self.j_Iz = jax.device_put(self.Iz)
-        print("✅ Spin operators cached in JAX device memory.")
+        self.j_I_dot = jax.device_put(self.I_dot)
+        print("✅ Spin operators and pre-computed two-body dot product tensors cached in JAX memory.")
 
     def _build_topological_mask(self, connectivity: np.ndarray) -> jnp.ndarray:
         """Uses NetworkX to mask J-couplings separated by > 4 bonds."""
@@ -76,7 +88,6 @@ class JAXSpinHamiltonian:
         G = nx.from_numpy_array(connectivity)
         mask = np.zeros((self.n, self.n))
         
-        # Calculate shortest path lengths
         lengths = dict(nx.all_pairs_shortest_path_length(G))
         for i in range(self.n):
             for j in range(self.n):
@@ -90,7 +101,7 @@ class JAXSpinHamiltonian:
     def solve_hamiltonian(self, shifts: jnp.ndarray, j_matrix: jnp.ndarray):
         """
         JIT-compiled strong-coupling Hamiltonian assembly and diagonalization.
-        H = Sum(v_i * Iz_i) + Sum(J_ij * (Ix_i*Ix_j + Iy_i*Iy_j + Iz_i*Iz_j))
+        SHIFT-09: Fast pre-computed two-body tensor lookup.
         """
         # 1. Zeeman Term (Chemical Shifts in Hz)
         H_zeeman = jnp.einsum('i,ijk->jk', shifts, self.j_Iz)
@@ -98,25 +109,11 @@ class JAXSpinHamiltonian:
         # 2. Apply Topological Mask to J-matrix
         j_masked = j_matrix * self.topological_mask
         
-        # 3. J-Coupling Term (Scalar product of spin vectors)
-        # We only sum i < j to avoid double counting
-        H_j = jnp.zeros_like(H_zeeman)
-        
-        # Note: In a pure JAX context, static loops over N are unwrolled during JIT.
-        # This is safe because N is strictly capped at 12.
-        for i in range(self.n):
-            for j in range(i + 1, self.n):
-                dot_product = (jnp.dot(self.j_Ix[i], self.j_Ix[j]) +
-                               jnp.dot(self.j_Iy[i], self.j_Iy[j]) +
-                               jnp.dot(self.j_Iz[i], self.j_Iz[j]))
-                H_j += j_masked[i, j] * dot_product
+        # 3. SHIFT-09: Fast J-Coupling Term using pre-computed j_I_dot
+        H_j = jnp.einsum('ij,ijkl->kl', j_masked * 0.5, self.j_I_dot)
 
         H_total = H_zeeman + H_j
         
         # 4. Diagonalize (Hermitian)
         eigenvalues, eigenvectors = jnp.linalg.eigh(H_total)
         return eigenvalues, eigenvectors
-
-# Example initialization:
-# engine = JAXSpinHamiltonian("./SHIFT_Workspace", n_spins=4)
-# E, V = engine.solve_hamiltonian(jnp.array([100., 200., 300., 400.]), jnp.zeros((4,4)))
