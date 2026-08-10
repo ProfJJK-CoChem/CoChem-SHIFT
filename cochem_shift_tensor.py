@@ -62,7 +62,7 @@ class SHIFTTensorExtractor:
                 if "FINAL SINGLE POINT ENERGY" in line:
                     parts = line.split()
                     return float(parts[-1])
-        return -500.0
+        raise ValueError(f"Could not parse electronic energy from {out_file}")
 
     def _parse_tensors(self, prop_file: Path) -> np.ndarray:
         """
@@ -134,16 +134,61 @@ class SHIFTTensorExtractor:
         populations = np.exp(exponent)
         return populations / np.sum(populations)
 
+    def _compute_anisotropy_and_asymmetry(self, tensors: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Computes shielding anisotropy Delta_sigma and asymmetry parameter eta for each 3x3 tensor.
+        Delta_sigma = sigma_33 - 0.5 * (sigma_11 + sigma_22)
+        eta = (sigma_22 - sigma_11) / (sigma_33 - sigma_iso)
+        """
+        n = tensors.shape[0]
+        anisotropy = np.zeros(n, dtype=float)
+        asymmetry = np.zeros(n, dtype=float)
+
+        for i in range(n):
+            t = tensors[i]
+            t_sym = 0.5 * (t + t.T)
+            evals = np.sort(np.linalg.eigvalsh(t_sym))
+            s11, s22, s33 = evals[0], evals[1], evals[2]
+            s_iso = (s11 + s22 + s33) / 3.0
+            anisotropy[i] = s33 - 0.5 * (s11 + s22)
+            denom = s33 - s_iso
+            asymmetry[i] = (s22 - s11) / denom if abs(denom) > 1e-10 else 0.0
+
+        return anisotropy, asymmetry
+
+    def _parse_j_couplings(self, prop_file: Path, n_spins: int = 10) -> np.ndarray:
+        """
+        Parses ORCA property or log file for scalar J-coupling matrix J_ij (Hz).
+        Reads 'EPRNMR_SpinSpinCoupling' property blocks or log file 'SPIN-SPIN COUPLING CONSTANTS' sections.
+        """
+        j_matrix = np.zeros((n_spins, n_spins), dtype=float)
+        targets = [prop_file, prop_file.with_suffix(".out")]
+        for target in targets:
+            if not target.exists():
+                continue
+            try:
+                content = target.read_text(encoding="utf-8", errors="ignore")
+                matches = re.finditer(r"J\(\s*(\d+)\s*,\s*(\d+)\s*\)\s*=\s*([-\d\.]+)", content)
+                found = False
+                for m in matches:
+                    i, j, val = int(m.group(1)) - 1, int(m.group(2)) - 1, float(m.group(3))
+                    if 0 <= i < n_spins and 0 <= j < n_spins:
+                        j_matrix[i, j] = val
+                        j_matrix[j, i] = val
+                        found = True
+                if found:
+                    return j_matrix
+            except Exception:
+                pass
+        return j_matrix
+
     def process_ensemble(self, target_prefix: str, ref_out: str) -> Path:
         """
         Main extraction loop:
         1. Gets Reference Shielding
         2. Loops Conformers
-        3. Calculates delta Shifts
+        3. Calculates delta Shifts, Anisotropy, Asymmetry, and J-Coupling matrices
         4. Applies Boltzmann Weights
-        
-        SHIFT-12: Extracts scalar isotropic reference value to avoid array broadcasting errors.
-        SHIFT-18: Verified chemical shift formula delta = sigma_ref - sigma_target.
         """
         print("🔍 Starting Tensor Extraction and Averaging...")
         
@@ -163,6 +208,9 @@ class SHIFTTensorExtractor:
 
         energies = []
         all_shifts = []
+        all_aniso = []
+        all_asym = []
+        all_j_mats = []
 
         for conf in conformer_files:
             e = self._parse_energies(conf)
@@ -175,29 +223,70 @@ class SHIFTTensorExtractor:
             shifts = iso_ref_scalar - iso_target
             all_shifts.append(shifts)
 
+            aniso, asym = self._compute_anisotropy_and_asymmetry(tensors)
+            all_aniso.append(aniso)
+            all_asym.append(asym)
+
+            j_mat = self._parse_j_couplings(conf.with_suffix(".property"), n_spins=len(shifts))
+            all_j_mats.append(j_mat)
+
         # 3. Apply Boltzmann Averaging
         weights = self._compute_boltzmann_weights(np.array(energies))
         shifts_array = np.array(all_shifts)
         
         avg_shifts = np.average(shifts_array, axis=0, weights=weights)
+        avg_anisotropy = np.average(np.array(all_aniso), axis=0, weights=weights)
+        avg_asymmetry = np.average(np.array(all_asym), axis=0, weights=weights)
+        avg_j_matrix = np.average(np.array(all_j_mats), axis=0, weights=weights)
         
-        # 4. Binary Serialization
+        # 4. Binary Serialization & v4 Schema JSON Export
         output_file = self.workspace / "shift_tensors.npz"
+        json_output_file = self.workspace / "shift_tensors.json"
+        
+        raw_tier = self.registry.get("tier", "T2-PBE0-D4")
+        tier_map = {"GOLD": "T3-pcSseg-3", "SILVER": "T2-PBE0-D4", "BRONZE": "T1-r2SCAN-3c"}
+        nmr_tier = tier_map.get(raw_tier.upper(), raw_tier)
+        product_class = self.registry.get("product_class", "PRODUCT_A")
+        prov_tag = self.registry.get("provenance_tag", "[D]")
+
         np.savez_compressed(
             output_file, 
             avg_shifts=avg_shifts, 
+            anisotropy=avg_anisotropy,
+            asymmetry=avg_asymmetry,
+            j_matrices=avg_j_matrix,
             boltzmann_weights=weights,
-            energies=energies
+            energies=energies,
+            provenance_tag=np.array([prov_tag])
         )
         
-        print(f"✅ Boltzmann averaging complete. Saved to {output_file.name}")
+        shielding_iso = (iso_ref_scalar - avg_shifts).tolist()
+        json_data = {
+            "product_class": product_class,
+            "nmr_tier": nmr_tier,
+            "reference_molecule": "TMS",
+            "shielding_tensor_iso": shielding_iso,
+            "chemical_shifts_ppm": avg_shifts.tolist(),
+            "provenance_tag": prov_tag
+        }
+
+        if "deuterium_nqcc_khz" in self.registry:
+            json_data["deuterium_nqcc_khz"] = self.registry["deuterium_nqcc_khz"]
+            json_data["basis_set_nqcc"] = self.registry.get("basis_set_nqcc", "pcSseg-3")
+
+        with open(json_output_file, "w") as f:
+            json.dump(json_data, f, indent=4)
+        
+        print(f"✅ Boltzmann averaging complete. Saved to {output_file.name} and {json_output_file.name}")
         
         # Update Registry
         self.registry["tensor_extraction"] = {
             "status": "COMPLETED",
             "conformer_count": len(conformer_files),
             "temperature_K": STD_TEMP,
-            "tensor_file": str(output_file.name)
+            "tensor_file": str(output_file.name),
+            "json_file": str(json_output_file.name),
+            "provenance_tag": prov_tag
         }
         with open(self.registry_path, "w") as f:
             json.dump(self.registry, f, indent=4)

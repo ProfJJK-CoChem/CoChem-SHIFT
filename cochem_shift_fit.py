@@ -25,6 +25,34 @@ except ImportError as err:
     logging.getLogger(__name__).warning("JAX or JAXSpinHamiltonian not available (%s). Bayesian spin fitting requires JAX.", err)
     HAS_JAX = False
 
+def apply_template_anchoring(
+    calc_shieldings: np.ndarray,
+    ref_shielding: float,
+    parent_exp_shifts: Dict[str, float],
+    parent_calc_shieldings: Dict[str, float]
+) -> np.ndarray:
+    """
+    Applies Product Class B/C template anchoring (§1.2).
+    delta_calc = sigma_ref - sigma_calc + Delta_template
+    where Delta_template = mean(delta_exp_parent - (sigma_ref - sigma_calc_parent))
+    """
+    calc_shieldings = np.asarray(calc_shieldings)
+    raw_shifts = ref_shielding - calc_shieldings
+    if not parent_exp_shifts or not parent_calc_shieldings:
+        return raw_shifts
+
+    offsets = []
+    for k, exp_val in parent_exp_shifts.items():
+        if k in parent_calc_shieldings:
+            parent_raw = ref_shielding - parent_calc_shieldings[k]
+            offsets.append(exp_val - parent_raw)
+
+    if not offsets:
+        return raw_shifts
+
+    delta_template = float(np.mean(offsets))
+    return raw_shifts + delta_template
+
 class SHIFTBayesianFitter:
     def __init__(self, workspace_path: str):
         self.workspace = Path(workspace_path)
@@ -47,6 +75,16 @@ class SHIFTBayesianFitter:
         
         data = np.load(npz_path)
         avg_shifts = data['avg_shifts']
+        
+        product_class = self.registry.get("product_class", "PRODUCT_A")
+        parent_exp = self.registry.get("parent_exp_shifts")
+        parent_calc = self.registry.get("parent_calc_shieldings")
+        ref_shielding = self.registry.get("ref_shielding", 184.0)
+
+        if product_class in ["PRODUCT_B", "PRODUCT_C"] and parent_exp and parent_calc:
+            calc_shieldings = ref_shielding - avg_shifts
+            avg_shifts = apply_template_anchoring(calc_shieldings, ref_shielding, parent_exp, parent_calc)
+            print(f"⚓ Applied Product Class {product_class} Template Anchoring to chemical shifts.")
         
         # Flatten the shift array and initialize a blank J-matrix guess for the prior
         n_spins = len(avg_shifts)
@@ -127,12 +165,17 @@ class SHIFTBayesianFitter:
         if not HAS_JAX:
             raise RuntimeError("JAX and JAXSpinHamiltonian are required for Bayesian fitting. Please install JAX.")
             
-        # SHIFT-06: Bypass MCMC completely when experimental spectrum is absent (BRONZE tier)
-        if self.registry.get("tier") == "BRONZE" or "dx_hash" not in self.registry:
-            print("⚠️ No experimental JCAMP-DX data found (BRONZE tier). Bypassing Bayesian fit.")
+        tier = self.registry.get("tier", "T1-r2SCAN-3c")
+        tier_upper = tier.upper()
+        # Bypass MCMC completely when experimental spectrum is absent or tier is T1 / BRONZE
+        if "T1" in tier_upper or "BRONZE" in tier_upper or "dx_hash" not in self.registry:
+            print("⚠️ No experimental JCAMP-DX data found (Screening tier). Bypassing Bayesian fit.")
             print("➡️ Emitting pure theoretical spectrum parameters directly.")
             avg_shifts, initial_j = self._load_theoretical_priors()
             results = {
+                "product_class": self.registry.get("product_class", "PRODUCT_A"),
+                "nmr_tier": tier,
+                "provenance_tag": "[D]",
                 "optimized_shifts_ppm": avg_shifts.tolist(),
                 "optimized_j_couplings_hz": initial_j[np.triu_indices(len(avg_shifts), k=1)].tolist(),
                 "mcmc_steps": 0,
@@ -143,6 +186,7 @@ class SHIFTBayesianFitter:
             with open(output_file, "w") as f:
                 json.dump(results, f, indent=4)
             return output_file
+
 
         avg_shifts, initial_j = self._load_theoretical_priors()
         n_spins = len(avg_shifts)

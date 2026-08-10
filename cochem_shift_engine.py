@@ -105,32 +105,77 @@ class SHIFTPhysicsDispatcher:
         orca_solvent_block = f"%cpcm smd true\n smdsolvent \"{solvent}\"\nend"
         return orca_solvent_block, needs_micro_solvation
 
-    def _build_orca_template(self, is_relativistic: bool, solvent_block: str, tier: str, rel_hamiltonian: str = "ZORA") -> str:
+    def _build_orca_command(
+        self,
+        tier: str = "T2-PBE0-D4",
+        is_relativistic: bool = False,
+        rel_hamiltonian: str = "ZORA",
+        is_deuterium: bool = False,
+        use_calibrated_mace: bool = False
+    ) -> str:
         """
-        Constructs the physics-aware ORCA command string based on the calculation tier.
-        SHIFT-01: Fixed model parameter spelling to 'Thesseus_NMR'.
-        SHIFT-03: Consistent Relativistic Hamiltonian selection (ZORA or DKH2).
+        Constructs v4 Method Matrix ORCA NMR command string.
+        SHIFT-01: Replaced GOLD/SILVER/BRONZE tiering with T1, T2, T3 tiers.
+        SHIFT-02: Eliminated hardcoded uncalibrated %mace block unless explicitly requested with calibration.
+        SHIFT-03: Enforces pcSseg-3 basis for Deuterium.
         """
-        base_cmd = "! NMR GIAO"
-        
-        # Tier-based method selection
-        if tier in ["GOLD", "SILVER"]:
-            base_cmd += " PBE0 pcSseg-2 def2/J"
-        else:  # BRONZE
-            base_cmd += " r2SCAN-3c"
+        tier_upper = tier.upper()
+        if "T1" in tier_upper or "BRONZE" in tier_upper:
+            base_cmd = "! NMR GIAO r2SCAN-3c def2/J"
+        elif "T3" in tier_upper or "GOLD" in tier_upper:
+            basis = "pcSseg-3" if not is_relativistic else "ZORA-def2-QZVPP"
+            base_cmd = f"! NMR GIAO PBE0-D4 {basis} def2/J"
+        else:  # T2-PBE0-D4 (Default)
+            basis = "pcSseg-2" if not is_deuterium else "pcSseg-3"
+            base_cmd = f"! NMR GIAO PBE0-D4 {basis} def2/J"
 
-        # SHIFT-03: Relativistic selection matching Hamiltonian specification
         if is_relativistic:
             if rel_hamiltonian.upper() == "DKH2":
                 base_cmd += " DKH2 DKH-def2-TZVPP SARC/J"
             else:
                 base_cmd += " ZORA ZORA-def2-TZVPP SARC/J"
-            
-        # SHIFT-01: Correct spelling for MACE model parameter 'Thesseus_NMR'
-        base_cmd += "\n%mace\n  Active true\n  Model Thesseus_NMR\nend"
-            
-        # Build the full template
-        template = f"{base_cmd}\n\n{solvent_block}\n\n%nmr\n  CalculateShielding true\n  CalculateSSCC true\nend\n"
+
+        if use_calibrated_mace:
+            base_cmd += "\n%mace\n  Active true\n  Model Thesseus_NMR\nend"
+
+        template = f"{base_cmd}\n\n%nmr\n  CalculateShielding true\n  CalculateSSCC true\nend\n"
+        return template
+
+    def _build_orca_template(
+        self,
+        is_relativistic: bool,
+        solvent_block: str = "",
+        tier: str = "T2-PBE0-D4",
+        rel_hamiltonian: str = "ZORA",
+        is_deuterium: bool = False,
+        use_calibrated_mace: bool = False
+    ) -> str:
+        """
+        Constructs the physics-aware ORCA command string based on the calculation tier and solvent block.
+        """
+        tier_upper = tier.upper()
+        if "T1" in tier_upper or "BRONZE" in tier_upper:
+            base_cmd = "! NMR GIAO r2SCAN-3c def2/J"
+        elif "T3" in tier_upper or "GOLD" in tier_upper:
+            basis = "pcSseg-3" if not is_relativistic else "ZORA-def2-QZVPP"
+            base_cmd = f"! NMR GIAO PBE0-D4 {basis} def2/J"
+        else:  # T2-PBE0-D4 (Default)
+            basis = "pcSseg-2" if not is_deuterium else "pcSseg-3"
+            base_cmd = f"! NMR GIAO PBE0-D4 {basis} def2/J"
+
+        if is_relativistic:
+            if rel_hamiltonian.upper() == "DKH2":
+                base_cmd += " DKH2 DKH-def2-TZVPP SARC/J"
+            else:
+                base_cmd += " ZORA ZORA-def2-TZVPP SARC/J"
+
+        if use_calibrated_mace:
+            base_cmd += "\n%mace\n  Active true\n  Model Thesseus_NMR\nend"
+
+        if solvent_block:
+            template = f"{base_cmd}\n\n{solvent_block}\n\n%nmr\n  CalculateShielding true\n  CalculateSSCC true\nend\n"
+        else:
+            template = f"{base_cmd}\n\n%nmr\n  CalculateShielding true\n  CalculateSSCC true\nend\n"
         return template
 
     def _ensure_reference_geometry(self) -> Path:
@@ -145,18 +190,27 @@ class SHIFTPhysicsDispatcher:
             print(f"Generated standard TMS reference structure at {tms_path}")
         return tms_path
 
-    def dispatch(self, xyz_file: str, solvent: str = "Chloroform") -> Dict[str, str]:
+    def dispatch(self, xyz_file: str, solvent: str = "Chloroform", is_deuterium: bool = False) -> Dict[str, Any]:
         """Generates the input files for the target molecule and the internal reference."""
         xyz_path = Path(xyz_file)
         target_name = xyz_path.stem
-        tier = self.registry.get("tier", "BRONZE")
+        raw_tier = self.registry.get("tier", "T2-PBE0-D4")
+        
+        # Map legacy tier names if found
+        tier_map = {"GOLD": "T3-pcSseg-3", "SILVER": "T2-PBE0-D4", "BRONZE": "T1-r2SCAN-3c"}
+        tier = tier_map.get(raw_tier.upper(), raw_tier)
         
         # Run Physics Checks
         is_relativistic = self._check_relativistic_gate(xyz_path)
         solvent_block, micro_solvation_flag = self._route_solvation(solvent)
         
         # Generate string template
-        orca_header = self._build_orca_template(is_relativistic, solvent_block, tier)
+        orca_header = self._build_orca_template(
+            is_relativistic=is_relativistic,
+            solvent_block=solvent_block,
+            tier=tier,
+            is_deuterium=is_deuterium
+        )
         
         # 1. Target Molecule Input
         target_inp = self.workspace / f"{target_name}_nmr.inp"
@@ -172,12 +226,14 @@ class SHIFTPhysicsDispatcher:
         print(f"✅ Dispatch complete. Target and Reference inputs generated at {tier} level.")
         
         # Update registry with run parameters
+        self.registry["tier"] = tier
         self.registry["physics_params"] = {
             "relativistic": is_relativistic,
             "solvent": solvent,
             "micro_solvation_required": micro_solvation_flag,
             "target_inp": str(target_inp.name),
-            "reference_inp": str(ref_inp.name)
+            "reference_inp": str(ref_inp.name),
+            "is_deuterium": is_deuterium
         }
         
         with open(self.registry_path, "w") as f:

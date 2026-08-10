@@ -10,33 +10,35 @@ grade LaTeX table.
 """
 
 import json
+import re
 import numpy as np
 from pathlib import Path
 from typing import Dict, Any, List, Tuple  # SHIFT-20: Added Tuple import
 import plotly.graph_objects as go
 from scipy.optimize import linear_sum_assignment
 
+_LATEX_REPLACEMENTS = {
+    "\\": r"\textbackslash{}",
+    "_": r"\_",
+    "%": r"\%",
+    "&": r"\&",
+    "#": r"\#",
+    "$": r"\$",
+    "{": r"\{",
+    "}": r"\}",
+    "~": r"\textasciitilde{}",
+    "^": r"\textasciicircum{}",
+}
+
+_LATEX_ESCAPE_REGEX = re.compile("|".join(re.escape(k) for k in _LATEX_REPLACEMENTS.keys()))
+
 def sanitize_latex(text: str) -> str:
     """
-    SHIFT-15: Comprehensive LaTeX string sanitizer.
+    SHIFT-15: Comprehensive LaTeX string sanitizer using single-pass regex replacement.
     """
     if not text:
         return ""
-    replacements = {
-        "\\": "\\textbackslash{}",
-        "_": "\\_",
-        "%": "\\%",
-        "&": "\\&",
-        "#": "\\#",
-        "$": "\\$",
-        "{": "\\{",
-        "}": "\\}",
-        "~": "\\textasciitilde{}",
-        "^": "\\textasciicircum{}"
-    }
-    for orig, rep in replacements.items():
-        text = text.replace(orig, rep)
-    return text
+    return _LATEX_ESCAPE_REGEX.sub(lambda match: _LATEX_REPLACEMENTS[match.group(0)], text)
 
 class SHIFTPublicationExporter:
     def __init__(self, workspace_path: str):
@@ -81,6 +83,12 @@ class SHIFTPublicationExporter:
         """
         fig = go.Figure()
         
+        raw_tier = self.params.get("nmr_tier") or self.registry.get("tier", "T1-r2SCAN-3c")
+        tier_map = {"GOLD": "T3-pcSseg-3", "SILVER": "T2-PBE0-D4", "BRONZE": "T1-r2SCAN-3c"}
+        tier = tier_map.get(str(raw_tier).upper(), str(raw_tier))
+        product_class = self.params.get("product_class") or self.registry.get("product_class", "PRODUCT_A")
+        prov_tag = self.params.get("provenance_tag") or self.registry.get("provenance_tag", "[D]")
+
         if len(shifts) > 0:
             x_axis = np.linspace(min(shifts) - 2, max(shifts) + 2, 1000)
             y_axis = np.zeros_like(x_axis)
@@ -88,11 +96,11 @@ class SHIFTPublicationExporter:
             for shift in shifts:
                 y_axis += 1.0 / (1.0 + ((x_axis - shift) / line_width)**2)
                 
-            fig.add_trace(go.Scatter(x=x_axis, y=y_axis, mode='lines', name='Theoretical', line=dict(color='blue')))
+            fig.add_trace(go.Scatter(x=x_axis, y=y_axis, mode='lines', name=f'Theoretical {prov_tag}', line=dict(color='blue')))
             fig.add_trace(go.Bar(x=shifts, y=[1]*len(shifts), name='Assigned Shifts', marker_color='red', width=0.01))
         
         fig.update_layout(
-            title="CoChem-SHIFT: Bayesian Optimized NMR Spectrum",
+            title=f"CoChem-SHIFT: Bayesian Optimized NMR Spectrum ({tier}, {product_class}, {prov_tag})",
             xaxis_title="Chemical Shift (ppm)",
             yaxis_title="Normalized Intensity",
             template="plotly_dark",
@@ -105,28 +113,34 @@ class SHIFTPublicationExporter:
 
     def _generate_latex_report(self, shifts: List[float], j_couplings: List[float]) -> Path:
         """
-        SHIFT-15: Compiles siunitx LaTeX table with sanitized special characters.
+        SHIFT-15: Compiles siunitx LaTeX table with sanitized special characters and provenance tags.
         """
         raw_name = self.registry.get("mol_name", "Unknown_Molecule")
         mol_name = sanitize_latex(raw_name)
-        tier = sanitize_latex(self.registry.get("tier", "BRONZE"))
+        
+        raw_tier = self.params.get("nmr_tier") or self.registry.get("tier", "T1-r2SCAN-3c")
+        tier_map = {"GOLD": "T3-pcSseg-3", "SILVER": "T2-PBE0-D4", "BRONZE": "T1-r2SCAN-3c"}
+        tier = sanitize_latex(tier_map.get(str(raw_tier).upper(), str(raw_tier)))
+        
+        product_class = sanitize_latex(self.params.get("product_class") or self.registry.get("product_class", "PRODUCT_A"))
+        prov_tag = sanitize_latex(self.params.get("provenance_tag") or self.registry.get("provenance_tag", "[D]"))
         
         latex_str = f"""\\documentclass[11pt, a4paper]{{article}}
 \\usepackage{{booktabs}}
-\\package{{siunitx}}
+\\usepackage{{siunitx}}
 
 \\begin{{document}}
 
 \\begin{{table}}[htbp]
 \\centering
-\\caption{{Bayesian Optimized Chemical Shifts and $J$-couplings for {mol_name} at the {tier} Tier.}}
-\\begin{{tabular}}{{l S[table-format=2.4]}}
+\\caption{{Bayesian Optimized Chemical Shifts and $J$-couplings for {mol_name} at the {tier} Tier ({product_class}, Provenance: {prov_tag}).}}
+\\begin{{tabular}}{{l S[table-format=2.4] l}}
 \\toprule
-{{Nucleus Index}} & {{Chemical Shift (ppm)}} \\\\
+{{Nucleus Index}} & {{Chemical Shift (ppm)}} & {{Provenance}} \\\\
 \\midrule
 """
         for i, shift in enumerate(shifts):
-            latex_str += f"{i+1} & {shift:.4f} \\\\\n"
+            latex_str += f"{i+1} & {shift:.4f} & {prov_tag} \\\\\n"
             
         latex_str += """\\bottomrule
 \\end{tabular}
