@@ -1,3 +1,5 @@
+import logging
+logger = logging.getLogger(__name__)
 """
 CoChem-SHIFT: Stage 5.0 - Bipartite Assignment & FAIR Reporting
 Filename: cochem_shift_report.py
@@ -40,8 +42,24 @@ def sanitize_latex(text: str) -> str:
         return ""
     return _LATEX_ESCAPE_REGEX.sub(lambda match: _LATEX_REPLACEMENTS[match.group(0)], text)
 
+def determine_provenance_tag(params: Dict[str, Any], registry: Dict[str, Any], default: str = "[D]") -> str:
+    """
+    Determines explicit provenance tag ([M], [D], [E]) for reporting artifacts.
+    - [M]: Measured / Experimental
+    - [D]: Derived / Quantum Chemical DFT calculations
+    - [E]: Estimated / Machine Learning / Empirical / Anchored / Fitted parameters
+    """
+    tag = params.get("provenance_tag") or registry.get("provenance_tag")
+    if tag in ["[M]", "[D]", "[E]"]:
+        return tag
+    if params.get("bypassed") is False or registry.get("is_estimated"):
+        return "[E]"
+    if registry.get("is_experimental") or registry.get("data_type") == "experimental":
+        return "[M]"
+    return default
+
 class SHIFTPublicationExporter:
-    def __init__(self, workspace_path: str):
+    def __init__(self, workspace_path: str) -> None:
         self.workspace = Path(workspace_path)
         self.registry_path = self.workspace / "cochem_shift_registry.json"
         self.params_path = self.workspace / "optimized_parameters.json"
@@ -54,7 +72,7 @@ class SHIFTPublicationExporter:
         if not file_path.exists():
             raise FileNotFoundError(f"Required file missing: {file_path.name}. Run previous stages.")
         with open(file_path, "r") as f:
-            return json.load(f)
+            return json.loads(f.read())
 
     def _bipartite_matching(self, exp_peaks: np.ndarray, calc_peaks: np.ndarray, max_cutoff: float = 30.0) -> List[Tuple[int, int]]:
         """
@@ -87,7 +105,7 @@ class SHIFTPublicationExporter:
         tier_map = {"GOLD": "T3-pcSseg-3", "SILVER": "T2-PBE0-D4", "BRONZE": "T1-r2SCAN-3c"}
         tier = tier_map.get(str(raw_tier).upper(), str(raw_tier))
         product_class = self.params.get("product_class") or self.registry.get("product_class", "PRODUCT_A")
-        prov_tag = self.params.get("provenance_tag") or self.registry.get("provenance_tag", "[D]")
+        prov_tag = determine_provenance_tag(self.params, self.registry, default="[D]")
 
         if len(shifts) > 0:
             x_axis = np.linspace(min(shifts) - 2, max(shifts) + 2, 1000)
@@ -97,7 +115,7 @@ class SHIFTPublicationExporter:
                 y_axis += 1.0 / (1.0 + ((x_axis - shift) / line_width)**2)
                 
             fig.add_trace(go.Scatter(x=x_axis, y=y_axis, mode='lines', name=f'Theoretical {prov_tag}', line=dict(color='blue')))
-            fig.add_trace(go.Bar(x=shifts, y=[1]*len(shifts), name='Assigned Shifts', marker_color='red', width=0.01))
+            fig.add_trace(go.Bar(x=shifts, y=[1]*len(shifts), name=f'Assigned Shifts {prov_tag}', marker_color='red', width=0.01))
         
         fig.update_layout(
             title=f"CoChem-SHIFT: Bayesian Optimized NMR Spectrum ({tier}, {product_class}, {prov_tag})",
@@ -123,7 +141,9 @@ class SHIFTPublicationExporter:
         tier = sanitize_latex(tier_map.get(str(raw_tier).upper(), str(raw_tier)))
         
         product_class = sanitize_latex(self.params.get("product_class") or self.registry.get("product_class", "PRODUCT_A"))
-        prov_tag = sanitize_latex(self.params.get("provenance_tag") or self.registry.get("provenance_tag", "[D]"))
+        raw_prov_tag = determine_provenance_tag(self.params, self.registry, default="[D]")
+        prov_tag = sanitize_latex(raw_prov_tag)
+        shifts_prov = self.params.get("chemical_shifts_provenance") or self.params.get("shifts_provenance") or [raw_prov_tag] * len(shifts)
         
         latex_str = f"""\\documentclass[11pt, a4paper]{{article}}
 \\usepackage{{booktabs}}
@@ -140,7 +160,8 @@ class SHIFTPublicationExporter:
 \\midrule
 """
         for i, shift in enumerate(shifts):
-            latex_str += f"{i+1} & {shift:.4f} & {prov_tag} \\\\\n"
+            s_prov = sanitize_latex(shifts_prov[i]) if i < len(shifts_prov) else prov_tag
+            latex_str += f"{i+1} & {shift:.4f} & {s_prov} \\\\\n"
             
         latex_str += """\\bottomrule
 \\end{tabular}
@@ -156,20 +177,22 @@ class SHIFTPublicationExporter:
 
     def export_artifacts(self) -> None:
         """Main orchestration method to generate all FAIR deliverables."""
-        print("📊 Generating FAIR Publication Artifacts...")
+        logger.info("📊 Generating FAIR Publication Artifacts...")
         
         shifts = self.params.get("optimized_shifts_ppm", [])
         j_couplings = self.params.get("optimized_j_couplings_hz", [])
         
         # 1. Interactive Dashboard
         html_path = self._generate_plotly_dashboard(shifts, j_couplings)
-        print(f"✅ Interactive Dashboard generated: {html_path.name}")
+        logger.info(f"✅ Interactive Dashboard generated: {html_path.name}")
         
         # 2. LaTeX Publication Table
         tex_path = self._generate_latex_report(shifts, j_couplings)
-        print(f"✅ LaTeX mechanism table generated: {tex_path.name}")
+        logger.info(f"✅ LaTeX mechanism table generated: {tex_path.name}")
         
         # 3. Update Registry
+        prov_tag = determine_provenance_tag(self.params, self.registry, default="[D]")
+        self.registry["provenance_tag"] = prov_tag
         self.registry["status"] = "PIPELINE_COMPLETE"
         with open(self.registry_path, "w") as f:
             json.dump(self.registry, f, indent=4)

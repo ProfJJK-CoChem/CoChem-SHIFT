@@ -1,3 +1,4 @@
+from typing import Any, Dict, List, Optional
 """
 Unit tests for CoChem-SHIFT Stage 2.0 Physics Dispatcher.
 """
@@ -8,14 +9,14 @@ import tempfile
 import pytest
 from cochem_shift_engine import SHIFTPhysicsDispatcher, ATOMIC_NUMBERS
 
-def test_atomic_numbers_completeness():
+def test_atomic_numbers_completeness() -> None:
     assert ATOMIC_NUMBERS["H"] == 1
     assert ATOMIC_NUMBERS["C"] == 6
     assert ATOMIC_NUMBERS["Se"] == 34
     assert ATOMIC_NUMBERS["I"] == 53
     assert len(ATOMIC_NUMBERS) >= 100
 
-def test_v4_orca_command_builder():
+def test_v4_orca_command_builder() -> None:
     with tempfile.TemporaryDirectory() as tmpdir:
         reg_path = os.path.join(tmpdir, "cochem_shift_registry.json")
         with open(reg_path, "w") as f:
@@ -42,7 +43,7 @@ def test_v4_orca_command_builder():
         assert "pcSseg-3" in cmd_d
 
 
-def test_dispatcher_tms_reference_generation():
+def test_dispatcher_tms_reference_generation() -> None:
     with tempfile.TemporaryDirectory() as tmpdir:
         reg_path = os.path.join(tmpdir, "cochem_shift_registry.json")
         with open(reg_path, "w") as f:
@@ -63,4 +64,3 @@ def test_dispatcher_tms_reference_generation():
             content = f.read()
             assert "PBE0-D4 pcSseg-2" in content
             assert "%mace" not in content
-

@@ -1,3 +1,4 @@
+from typing import Any, Dict, List, Optional
 """
 Unit tests for CoChem-SHIFT Stage 4.2 Bayesian Fitter.
 """
@@ -11,7 +12,7 @@ import numpy as np
 jax = pytest.importorskip("jax")
 from cochem_shift_fit import SHIFTBayesianFitter, apply_template_anchoring
 
-def test_fit_screening_bypass():
+def test_fit_screening_bypass() -> None:
     with tempfile.TemporaryDirectory() as tmpdir:
         reg_path = os.path.join(tmpdir, "cochem_shift_registry.json")
         with open(reg_path, "w") as f:
@@ -25,12 +26,12 @@ def test_fit_screening_bypass():
         
         assert os.path.exists(out_json)
         with open(out_json, "r") as f:
-            data = json.load(f)
+            data = json.loads(f.read())
             assert data["bypassed"] is True
             assert len(data["optimized_shifts_ppm"]) == 3
             assert data["provenance_tag"] == "[D]"
 
-def test_template_anchoring():
+def test_template_anchoring() -> None:
     ref_shielding = 184.0
     calc_shieldings = np.array([182.5, 180.8, 176.9]) # raw shifts = [1.5, 3.2, 7.1]
     parent_exp_shifts = {"0": 1.6, "1": 3.3}
@@ -39,4 +40,3 @@ def test_template_anchoring():
     # parent raw shifts = [1.5, 3.2], exp = [1.6, 3.3] -> offsets = [+0.1, +0.1] -> mean offset = +0.1
     anchored_shifts = apply_template_anchoring(calc_shieldings, ref_shielding, parent_exp_shifts, parent_calc_shieldings)
     np.testing.assert_allclose(anchored_shifts, np.array([1.6, 3.3, 7.2]), rtol=1e-5)
-

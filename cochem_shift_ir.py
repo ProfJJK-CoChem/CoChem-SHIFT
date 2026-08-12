@@ -1,3 +1,4 @@
+import hashlib
 #!/usr/bin/env python3
 """
 CoChem-SHIFT: Stage 4.2 - Forward IR Spectrum Generator & PCM Solvent Dielectric Shielding
@@ -19,7 +20,7 @@ import numpy as np
 
 
 class SHIFTIRSpectrumGenerator:
-    def __init__(self, workspace_path: str):
+    def __init__(self, workspace_path: str) -> None:
         self.workspace = Path(workspace_path)
         self.registry_path = self.workspace / "cochem_shift_registry.json"
 
@@ -61,12 +62,12 @@ class SHIFTIRSpectrumGenerator:
         }
 
     @staticmethod
-    def apply_pcm_dielectric_shielding(freqs: np.ndarray, intensities: np.ndarray, 
+    def apply_pcm_dielectric_shielding(freqs: np.ndarray, intensities : np.ndarray, 
                                        solvent_dielectric: float = 78.39) -> Tuple[np.ndarray, np.ndarray]:
         """
         Applies PCM implicit solvent dielectric shielding factor f(eps) = 2(eps - 1) / (2*eps + 1).
         Solvent scaling:
-        I_solv = I_gas * (3*eps / (2*eps + 1))^2
+            I_solv = I_gas * (3*eps / (2*eps + 1))^2
         omega_solv = omega_gas * (1 - 0.005 * f(eps))
         """
         eps = max(1.0, solvent_dielectric)
@@ -82,12 +83,12 @@ class SHIFTIRSpectrumGenerator:
         return solv_freqs, solv_intensities
 
     @staticmethod
-    def calculate_lineshape(freq_grid: np.ndarray, center_freqs: np.ndarray, 
+    def calculate_lineshape(freq_grid: np.ndarray, center_freqs : np.ndarray, 
                             intensities: np.ndarray, scale_factor: float = 0.967, 
                             fwhm: float = 15.0, profile: str = "voigt") -> np.ndarray:
         """
         Convolves IR spectrum using Lorentzian, Gaussian, or Voigt lineshape functions.
-        Harmonic frequencies are scaled by scale_factor (default s = 0.967 for DFT/B3LYP).
+        Harmonic frequencies are scaled by scale_factor (default s = 0.967 for DFT/B3LYP with D4 dispersion correction).
         """
         scaled_centers = center_freqs * scale_factor
         spectrum = np.zeros_like(freq_grid, dtype=float)
@@ -109,7 +110,7 @@ class SHIFTIRSpectrumGenerator:
 
         return spectrum
 
-    def generate_ir_artifacts(self, out_file: Optional[Path] = None, solvent: str = "Water", 
+    def generate_ir_artifacts(self, out_file: Optional[Path] = None, solvent : str = "Water", 
                              dielectric: float = 78.39) -> Tuple[Path, Path]:
         """
         Generates Plotly interactive HTML IR spectrum dashboard and LaTeX publication table.
@@ -185,3 +186,13 @@ class SHIFTIRSpectrumGenerator:
         tex_path.write_text("\n".join(tex_lines), encoding="utf-8")
 
         return html_path, tex_path
+def calculate_artifact_sha256(filepath: str | Path) -> str:
+    """Calculates SHA-256 hash of a computational artifact."""
+    p = Path(filepath)
+    if not p.exists():
+        raise FileNotFoundError(f"Artifact file not found: {filepath}")
+    hasher = hashlib.sha256()
+    with open(p, "rb") as f:
+        while chunk := f.read(65536):
+            hasher.update(chunk)
+    return hasher.hexdigest()

@@ -1,3 +1,5 @@
+import hashlib
+from typing import Any, Dict, List, Optional
 """
 Unit tests for CoChem-SHIFT Stage 3.0 Tensor Extraction and Boltzmann Averaging.
 """
@@ -9,7 +11,7 @@ import pytest
 import numpy as np
 from cochem_shift_tensor import SHIFTTensorExtractor
 
-def test_tensor_extraction_and_averaging():
+def test_tensor_extraction_and_averaging() -> None:
     with tempfile.TemporaryDirectory() as tmpdir:
         reg_path = os.path.join(tmpdir, "cochem_shift_registry.json")
         with open(reg_path, "w") as f:
@@ -39,14 +41,14 @@ def test_tensor_extraction_and_averaging():
         json_path = os.path.join(tmpdir, "shift_tensors.json")
         assert os.path.exists(json_path)
         with open(json_path, "r") as f:
-            json_data = json.load(f)
+            json_data = json.loads(f.read())
             assert json_data["product_class"] == "PRODUCT_A"
             assert json_data["nmr_tier"] == "T2-PBE0-D4"
             assert json_data["provenance_tag"] == "[D]"
             assert "chemical_shifts_ppm" in json_data
             assert "shielding_tensor_iso" in json_data
 
-def test_shift_ir_generator():
+def test_shift_ir_generator() -> None:
     from cochem_shift_ir import SHIFTIRSpectrumGenerator
     with tempfile.TemporaryDirectory() as tmpdir:
         gen = SHIFTIRSpectrumGenerator(tmpdir)
@@ -55,3 +57,44 @@ def test_shift_ir_generator():
         assert tex_p.exists()
         assert "FORWARD IR" in html_p.read_text(encoding="utf-8").upper()
 
+def test_tensor_provenance_tags_m_d_e() -> None:
+    for expected_tag in ["[M]", "[D]", "[E]"]:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            reg_path = os.path.join(tmpdir, "cochem_shift_registry.json")
+            with open(reg_path, "w") as f:
+                json.dump({"mol_name": "target", "tier": "T2-PBE0-D4", "product_class": "PRODUCT_A", "provenance_tag": expected_tag}, f)
+                
+            ref_out = os.path.join(tmpdir, "TMS_reference_nmr.out")
+            with open(ref_out, "w") as f:
+                f.write("FINAL SINGLE POINT ENERGY -500.0\n")
+                
+            target_out = os.path.join(tmpdir, "target_nmr.out")
+            with open(target_out, "w") as f:
+                f.write("FINAL SINGLE POINT ENERGY -300.0\n")
+                
+            extractor = SHIFTTensorExtractor(tmpdir)
+            out_npz = extractor.process_ensemble("target", "TMS_reference_nmr.out")
+            
+            with np.load(out_npz) as data:
+                assert str(data["provenance_tag"][0]) == expected_tag
+                assert "shifts_provenance" in data
+                assert str(data["shifts_provenance"][0]) == expected_tag
+
+            json_path = os.path.join(tmpdir, "shift_tensors.json")
+            with open(json_path, "r") as f:
+                json_data = json.loads(f.read())
+                assert json_data["provenance_tag"] == expected_tag
+                assert json_data["chemical_shifts_provenance"][0] == expected_tag
+                assert json_data["chemical_shifts_tagged"][0]["provenance_tag"] == expected_tag
+
+
+def calculate_artifact_sha256(filepath: str | Path) -> str:
+    """Calculates SHA-256 hash of a computational artifact."""
+    p = Path(filepath)
+    if not p.exists():
+        raise FileNotFoundError(f"Artifact file not found: {filepath}")
+    hasher = hashlib.sha256()
+    with open(p, "rb") as f:
+        while chunk := f.read(65536):
+            hasher.update(chunk)
+    return hasher.hexdigest()

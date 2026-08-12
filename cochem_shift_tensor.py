@@ -1,3 +1,6 @@
+import hashlib
+import logging
+logger = logging.getLogger(__name__)
 """
 CoChem-SHIFT: Stage 3.0 - Tensor Extraction & Boltzmann Averaging
 Filename: cochem_shift_tensor.py
@@ -27,8 +30,24 @@ KB_HARTREE = 3.166811563e-6  # Boltzmann constant in Eh/K
 STD_TEMP = 298.15            # Standard temperature in Kelvin
 ABUNDANCE_THRESHOLD = 1e-4   # Drop isotopic states below 0.01% probability
 
+def determine_provenance_tag(registry: Dict[str, Any], default: str = "[D]") -> str:
+    """
+    Determines explicit provenance tag ([M], [D], [E]) for chemical shift tensors.
+    - [M]: Measured / Experimental
+    - [D]: Derived / DFT quantum chemical calculations (GIAO shielding, Boltzmann ensemble)
+    - [E]: Estimated / Machine Learning / Empirical / Anchored / Fitted parameters
+    """
+    tag = registry.get("provenance_tag")
+    if tag in ["[M]", "[D]", "[E]"]:
+        return tag
+    if registry.get("is_experimental") or registry.get("data_type") == "experimental":
+        return "[M]"
+    if registry.get("is_estimated") or registry.get("data_type") == "estimated" or registry.get("parent_exp_shifts") is not None:
+        return "[E]"
+    return default
+
 class SHIFTTensorExtractor:
-    def __init__(self, workspace_path: str):
+    def __init__(self, workspace_path: str) -> None:
         self.workspace = Path(workspace_path)
         self.registry_path = self.workspace / "cochem_shift_registry.json"
         self.registry = self._load_registry()
@@ -38,7 +57,7 @@ class SHIFTTensorExtractor:
         if not self.registry_path.exists():
             raise FileNotFoundError("SHIFT registry not found. Run previous stages.")
         with open(self.registry_path, "r") as f:
-            return json.load(f)
+            return json.loads(f.read())
 
     def _parse_energies(self, out_file: Path) -> float:
         """Uses cclib or regex parsing to extract final electronic energy (in Hartrees)."""
@@ -185,12 +204,12 @@ class SHIFTTensorExtractor:
     def process_ensemble(self, target_prefix: str, ref_out: str) -> Path:
         """
         Main extraction loop:
-        1. Gets Reference Shielding
+            1. Gets Reference Shielding
         2. Loops Conformers
         3. Calculates delta Shifts, Anisotropy, Asymmetry, and J-Coupling matrices
         4. Applies Boltzmann Weights
         """
-        print("🔍 Starting Tensor Extraction and Averaging...")
+        logger.info("🔍 Starting Tensor Extraction and Averaging...")
         
         # 1. Parse Reference Standard (e.g., TMS)
         ref_path = self.workspace / ref_out
@@ -203,7 +222,7 @@ class SHIFTTensorExtractor:
         # 2. Parse Target Conformers
         conformer_files = list(self.workspace.glob(f"{target_prefix}_conf*.out"))
         if not conformer_files:
-            print("⚠️ No conformer ensemble found, assuming single rigid structure.")
+            logger.info("⚠️ No conformer ensemble found, assuming single rigid structure.")
             conformer_files = [self.workspace / f"{target_prefix}_nmr.out"]
 
         energies = []
@@ -247,7 +266,8 @@ class SHIFTTensorExtractor:
         tier_map = {"GOLD": "T3-pcSseg-3", "SILVER": "T2-PBE0-D4", "BRONZE": "T1-r2SCAN-3c"}
         nmr_tier = tier_map.get(raw_tier.upper(), raw_tier)
         product_class = self.registry.get("product_class", "PRODUCT_A")
-        prov_tag = self.registry.get("provenance_tag", "[D]")
+        prov_tag = determine_provenance_tag(self.registry, default="[D]")
+        shifts_provenance = [prov_tag] * len(avg_shifts)
 
         np.savez_compressed(
             output_file, 
@@ -257,7 +277,8 @@ class SHIFTTensorExtractor:
             j_matrices=avg_j_matrix,
             boltzmann_weights=weights,
             energies=energies,
-            provenance_tag=np.array([prov_tag])
+            provenance_tag=np.array([prov_tag]),
+            shifts_provenance=np.array(shifts_provenance)
         )
         
         shielding_iso = (iso_ref_scalar - avg_shifts).tolist()
@@ -267,7 +288,12 @@ class SHIFTTensorExtractor:
             "reference_molecule": "TMS",
             "shielding_tensor_iso": shielding_iso,
             "chemical_shifts_ppm": avg_shifts.tolist(),
-            "provenance_tag": prov_tag
+            "provenance_tag": prov_tag,
+            "chemical_shifts_provenance": shifts_provenance,
+            "chemical_shifts_tagged": [
+                {"nucleus_index": i + 1, "shift_ppm": float(s), "provenance_tag": prov_tag}
+                for i, s in enumerate(avg_shifts)
+            ]
         }
 
         if "deuterium_nqcc_khz" in self.registry:
@@ -277,9 +303,10 @@ class SHIFTTensorExtractor:
         with open(json_output_file, "w") as f:
             json.dump(json_data, f, indent=4)
         
-        print(f"✅ Boltzmann averaging complete. Saved to {output_file.name} and {json_output_file.name}")
+        logger.info(f"✅ Boltzmann averaging complete. Saved to {output_file.name} and {json_output_file.name}")
         
         # Update Registry
+        self.registry["provenance_tag"] = prov_tag
         self.registry["tensor_extraction"] = {
             "status": "COMPLETED",
             "conformer_count": len(conformer_files),
@@ -292,3 +319,13 @@ class SHIFTTensorExtractor:
             json.dump(self.registry, f, indent=4)
             
         return output_file
+def calculate_artifact_sha256(filepath: str | Path) -> str:
+    """Calculates SHA-256 hash of a computational artifact."""
+    p = Path(filepath)
+    if not p.exists():
+        raise FileNotFoundError(f"Artifact file not found: {filepath}")
+    hasher = hashlib.sha256()
+    with open(p, "rb") as f:
+        while chunk := f.read(65536):
+            hasher.update(chunk)
+    return hasher.hexdigest()

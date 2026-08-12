@@ -1,3 +1,6 @@
+import hashlib
+import logging
+logger = logging.getLogger(__name__)
 """
 CoChem-SHIFT: Stage 4.2 - MCMC Bayesian Spin Fitting Engine
 Filename: cochem_shift_fit.py
@@ -54,7 +57,7 @@ def apply_template_anchoring(
     return raw_shifts + delta_template
 
 class SHIFTBayesianFitter:
-    def __init__(self, workspace_path: str):
+    def __init__(self, workspace_path: str) -> None:
         self.workspace = Path(workspace_path)
         self.registry_path = self.workspace / "cochem_shift_registry.json"
         self.registry = self._load_registry()
@@ -65,7 +68,7 @@ class SHIFTBayesianFitter:
         if not self.registry_path.exists():
             raise FileNotFoundError("SHIFT registry missing. Cannot initiate fitting.")
         with open(self.registry_path, "r") as f:
-            return json.load(f)
+            return json.loads(f.read())
 
     def _load_theoretical_priors(self) -> Tuple[np.ndarray, np.ndarray]:
         """Extracts the Boltzmann-averaged shifts to serve as the MCMC origin point."""
@@ -84,7 +87,7 @@ class SHIFTBayesianFitter:
         if product_class in ["PRODUCT_B", "PRODUCT_C"] and parent_exp and parent_calc:
             calc_shieldings = ref_shielding - avg_shifts
             avg_shifts = apply_template_anchoring(calc_shieldings, ref_shielding, parent_exp, parent_calc)
-            print(f"⚓ Applied Product Class {product_class} Template Anchoring to chemical shifts.")
+        logger.info(f"⚓ Applied Product Class {product_class} Template Anchoring to chemical shifts.")
         
         # Flatten the shift array and initialize a blank J-matrix guess for the prior
         n_spins = len(avg_shifts)
@@ -159,7 +162,7 @@ class SHIFTBayesianFitter:
 
     def execute_fitting(self, steps: int = 2000, n_walkers: int = 64) -> Path:
         """Initializes the MCMC ensemble, runs the burn-in, and samples the posterior."""
-        print("🧬 Initializing MCMC Bayesian Optimization...")
+        logger.info("🧬 Initializing MCMC Bayesian Optimization...")
         
         # SHIFT-17: Raise explicit RuntimeError if JAX missing
         if not HAS_JAX:
@@ -169,8 +172,8 @@ class SHIFTBayesianFitter:
         tier_upper = tier.upper()
         # Bypass MCMC completely when experimental spectrum is absent or tier is T1 / BRONZE
         if "T1" in tier_upper or "BRONZE" in tier_upper or "dx_hash" not in self.registry:
-            print("⚠️ No experimental JCAMP-DX data found (Screening tier). Bypassing Bayesian fit.")
-            print("➡️ Emitting pure theoretical spectrum parameters directly.")
+            logger.info("⚠️ No experimental JCAMP-DX data found (Screening tier). Bypassing Bayesian fit.")
+            logger.info("➡️ Emitting pure theoretical spectrum parameters directly.")
             avg_shifts, initial_j = self._load_theoretical_priors()
             results = {
                 "product_class": self.registry.get("product_class", "PRODUCT_A"),
@@ -221,7 +224,7 @@ class SHIFTBayesianFitter:
             args=(n_spins, exp_spectrum), backend=backend
         )
         
-        print(f"🏃‍♂️ Running {n_walkers} walkers for {steps} steps...")
+        logger.info(f"🏃‍♂️ Running {n_walkers} walkers for {steps} steps...")
         sampler.run_mcmc(pos, steps, progress=True)
         
         flat_samples = sampler.get_chain(discard=int(steps*0.2), thin=15, flat=True)
@@ -238,5 +241,15 @@ class SHIFTBayesianFitter:
         with open(output_file, "w") as f:
             json.dump(results, f, indent=4)
             
-        print(f"✅ MCMC Fitting Complete. Parameters saved to {output_file.name}")
+        logger.info(f"✅ MCMC Fitting Complete. Parameters saved to {output_file.name}")
         return output_file
+def calculate_artifact_sha256(filepath: str | Path) -> str:
+    """Calculates SHA-256 hash of a computational artifact."""
+    p = Path(filepath)
+    if not p.exists():
+        raise FileNotFoundError(f"Artifact file not found: {filepath}")
+    hasher = hashlib.sha256()
+    with open(p, "rb") as f:
+        while chunk := f.read(65536):
+            hasher.update(chunk)
+    return hasher.hexdigest()

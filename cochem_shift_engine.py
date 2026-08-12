@@ -1,10 +1,12 @@
+import logging
+logger = logging.getLogger(__name__)
 """
 CoChem-SHIFT: Stage 2.0 - The Physics Dispatcher & Solvation Router
 Filename: cochem_shift_engine.py
 
 This module dynamically builds ORCA 6.1.1 input files for NMR/EPR calculations.
 It enforces strict physical logic:
-1. Relativistic Gate: Forces DKH2 / ZORA for heavy elements (Z > 30).
+    1. Relativistic Gate: Forces DKH2 / ZORA for heavy elements (Z > 30).
 2. Dynamic Internal Referencing: Generates an identical compute template for the TMS standard.
 3. Solvation Router: Flags protic solvents for explicit micro-solvation handling.
 """
@@ -53,7 +55,7 @@ H         -1.956000    0.512000   -1.365000
 """
 
 class SHIFTPhysicsDispatcher:
-    def __init__(self, workspace_path: str):
+    def __init__(self, workspace_path: str) -> None:
         self.workspace = Path(workspace_path)
         self.registry_path = self.workspace / "cochem_shift_registry.json"
         self.registry = self._load_registry()
@@ -73,12 +75,12 @@ class SHIFTPhysicsDispatcher:
         if not self.registry_path.exists():
             raise FileNotFoundError("SHIFT registry not found. Run Stage 1.0 Ingestion first.")
         with open(self.registry_path, "r") as f:
-            return json.load(f)
+            return json.loads(f.read())
 
     def _check_relativistic_gate(self, xyz_path: Path) -> bool:
         """Parses the XYZ file to determine if heavy elements (Z > 30) are present."""
         if not xyz_path.exists():
-            print(f"⚠️ Geometry file {xyz_path} missing. Defaulting to Non-Relativistic.")
+            logger.info(f"⚠️ Geometry file {xyz_path} missing. Defaulting to Non-Relativistic.")
             return False
             
         with open(xyz_path, "r") as f:
@@ -91,7 +93,7 @@ class SHIFTPhysicsDispatcher:
                 # SHIFT-04: Full element mapping
                 z_num = ATOMIC_NUMBERS.get(element, 0)
                 if z_num > 30:
-                    print(f"⚛️ Heavy element detected ({element}, Z={z_num}). Activating Relativistic Gate.")
+                    logger.info(f"⚛️ Heavy element detected ({element}, Z={z_num}). Activating Relativistic Gate.")
                     return True
         return False
 
@@ -99,7 +101,7 @@ class SHIFTPhysicsDispatcher:
         """Determines the ORCA solvent block and checks if explicit micro-solvation is needed."""
         needs_micro_solvation = solvent in PROTIC_SOLVENTS
         if needs_micro_solvation:
-            print(f"💧 Protic solvent detected ({solvent}). Flagging for explicit micro-solvation.")
+            logger.info(f"💧 Protic solvent detected ({solvent}). Flagging for explicit micro-solvation.")
             
         # Using SMD as the default robust implicit model for NMR
         orca_solvent_block = f"%cpcm smd true\n smdsolvent \"{solvent}\"\nend"
@@ -187,7 +189,7 @@ class SHIFTPhysicsDispatcher:
             tms_path.parent.mkdir(parents=True, exist_ok=True)
             with open(tms_path, "w") as f:
                 f.write(DEFAULT_TMS_XYZ)
-            print(f"Generated standard TMS reference structure at {tms_path}")
+        logger.info(f"Generated standard TMS reference structure at {tms_path}")
         return tms_path
 
     def dispatch(self, xyz_file: str, solvent: str = "Chloroform", is_deuterium: bool = False) -> Dict[str, Any]:
@@ -223,7 +225,7 @@ class SHIFTPhysicsDispatcher:
         with open(ref_inp, "w") as f:
             f.write(f"{orca_header}\n* xyzfile 0 1 {ref_xyz.resolve()}\n")
             
-        print(f"✅ Dispatch complete. Target and Reference inputs generated at {tier} level.")
+        logger.info(f"✅ Dispatch complete. Target and Reference inputs generated at {tier} level.")
         
         # Update registry with run parameters
         self.registry["tier"] = tier

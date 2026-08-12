@@ -1,3 +1,4 @@
+from typing import Any, Dict, List, Optional
 """
 Unit tests for CoChem-SHIFT Stage 1.0 Ingestion.
 """
@@ -8,7 +9,7 @@ import tempfile
 import pytest
 from cochem_shift_ingest import SHIFTIngestor
 
-def test_ingestor_xyz_validation():
+def test_ingestor_xyz_validation() -> None:
     with tempfile.TemporaryDirectory() as tmpdir:
         xyz_path = os.path.join(tmpdir, "mol.xyz")
         with open(xyz_path, "w") as f:
@@ -22,9 +23,8 @@ def test_ingestor_xyz_validation():
         assert reg["product_class"] == "PRODUCT_A"
         assert os.path.exists(os.path.join(tmpdir, "cochem_shift_registry.json"))
 
-def test_determine_tier():
+def test_determine_tier() -> None:
     ingestor = SHIFTIngestor(".")
     assert ingestor.determine_tier(has_experimental=False, has_high_tier_tensors=False) == "T1-r2SCAN-3c"
     assert ingestor.determine_tier(has_experimental=True, has_high_tier_tensors=False) == "T2-PBE0-D4"
     assert ingestor.determine_tier(has_experimental=True, has_high_tier_tensors=True) == "T3-pcSseg-3"
-

@@ -1,3 +1,4 @@
+from typing import Any, Dict, List, Optional
 """
 Unit tests for CoChem-SHIFT Stage 4.1 JAX Spin Hamiltonian Engine.
 """
@@ -9,7 +10,7 @@ jax = pytest.importorskip("jax")
 import jax.numpy as jnp
 from cochem_shift_hamiltonian import JAXSpinHamiltonian, compute_deuterium_nqcc
 
-def test_hamiltonian_construction_and_solve():
+def test_hamiltonian_construction_and_solve() -> None:
     n_spins = 3
     engine = JAXSpinHamiltonian(".", n_spins=n_spins)
     
@@ -22,11 +23,11 @@ def test_hamiltonian_construction_and_solve():
     assert len(evals) == 2**n_spins
     assert not np.isnan(np.array(evals)).any()
 
-def test_hamiltonian_oom_guard():
+def test_hamiltonian_oom_guard() -> None:
     with pytest.raises(MemoryError):
         JAXSpinHamiltonian(".", n_spins=15)
 
-def test_2d_cosy_and_hsqc():
+def test_2d_cosy_and_hsqc() -> None:
     n_spins = 2
     engine = JAXSpinHamiltonian(".", n_spins=n_spins)
     shifts = jnp.array([1.5, 7.2])
@@ -43,7 +44,7 @@ def test_2d_cosy_and_hsqc():
     assert hsqc_mat.shape == (256, 256)
     assert np.max(hsqc_mat) > 0.0
 
-def test_deuterium_nqcc_basis_guard():
+def test_deuterium_nqcc_basis_guard() -> None:
     efg = np.diag([1.0, -0.5, -0.5])
     # Quadruple-zeta core-valence basis sets pass
     res1 = compute_deuterium_nqcc(efg, basis_set="pcSseg-3")
@@ -57,4 +58,3 @@ def test_deuterium_nqcc_basis_guard():
     # Lower basis set fails with ValueError (§6.3)
     with pytest.raises(ValueError, match="strictly required"):
         compute_deuterium_nqcc(efg, basis_set="def2-SVP")
-

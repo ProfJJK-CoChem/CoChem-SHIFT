@@ -1,3 +1,6 @@
+import logging
+logger = logging.getLogger(__name__)
+from typing import Any, Dict, List, Optional
 """
 CoChem-SHIFT: Stage 4.1 - JAX Hamiltonian Construction & Caching
 Filename: cochem_shift_hamiltonian.py
@@ -21,7 +24,7 @@ from pathlib import Path
 jax.config.update("jax_enable_x64", True)
 
 class JAXSpinHamiltonian:
-    def __init__(self, workspace_path: str, n_spins: int, connectivity_matrix: np.ndarray = None):
+    def __init__(self, workspace_path: str, n_spins: int, connectivity_matrix: np.ndarray = None) -> None:
         """
         Initializes the spin operators for a given number of spin-1/2 nuclei.
         SHIFT-08: Clear spin limit explanation and weak-coupling options.
@@ -35,11 +38,11 @@ class JAXSpinHamiltonian:
             raise MemoryError(f"Spin system size N={self.n} exceeds direct Hilbert space limit (2^{self.n} = {2**self.n}). "
                               "For N > 12, use weak-coupling block-diagonalization sub-spin partitioning.")
             
-        print(f"⚙️ Initializing JAX Spin-1/2 Operators for N={self.n}...")
+        logger.info(f"⚙️ Initializing JAX Spin-1/2 Operators for N={self.n}...")
         self._build_operators()
         self.topological_mask = self._build_topological_mask(connectivity_matrix)
 
-    def _build_operators(self):
+    def _build_operators(self) -> Any:
         """
         Builds multi-spin Pauli matrices using Kronecker tensor products.
         SHIFT-09: Pre-computes two-body dot product operators I_xi I_xj + I_yi I_yj + I_zi I_zj.
@@ -79,7 +82,7 @@ class JAXSpinHamiltonian:
         self.j_Iy = jax.device_put(self.Iy)
         self.j_Iz = jax.device_put(self.Iz)
         self.j_I_dot = jax.device_put(self.I_dot)
-        print("✅ Spin operators and pre-computed two-body dot product tensors cached in JAX memory.")
+    logger.info("✅ Spin operators and pre-computed two-body dot product tensors cached in JAX memory.")
 
     def _build_topological_mask(self, connectivity: np.ndarray) -> jnp.ndarray:
         """Uses NetworkX to mask J-couplings separated by > 4 bonds."""
@@ -95,11 +98,11 @@ class JAXSpinHamiltonian:
                 if lengths.get(i, {}).get(j, 999) <= 4:
                     mask[i, j] = 1.0
                     
-        print("🕸️ Topological Cutoff Mask generated (Max 4 bonds).")
+        logger.info("🕸️ Topological Cutoff Mask generated (Max 4 bonds).")
         return jax.device_put(mask)
 
     @partial(jax.jit, static_argnums=(0,))
-    def solve_hamiltonian(self, shifts: jnp.ndarray, j_matrix: jnp.ndarray):
+    def solve_hamiltonian(self, shifts: jnp.ndarray, j_matrix: jnp.ndarray) -> Any:
         """
         JIT-compiled strong-coupling Hamiltonian assembly and diagonalization.
         SHIFT-09: Fast pre-computed two-body tensor lookup.
@@ -122,7 +125,7 @@ class JAXSpinHamiltonian:
     def compute_transition_intensities(self, shifts: jnp.ndarray, j_matrix: jnp.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """
         Computes quantum mechanical transition frequencies nu_ab and dipole intensities I_ab:
-        I_ab = |<psi_a | F_x | psi_b>|^2 where F_x = sum_i I_xi.
+            I_ab = |<psi_a | F_x | psi_b>|^2 where F_x = sum_i I_xi.
         """
         evals, evecs = self.solve_hamiltonian(shifts, j_matrix)
         evals_np = np.array(evals)
@@ -148,7 +151,7 @@ class JAXSpinHamiltonian:
 
         return np.array(freqs, dtype=float), np.array(intensities, dtype=float)
 
-    def generate_2d_cosy_matrix(self, shifts_ppm: np.ndarray, j_matrix: np.ndarray, 
+    def generate_2d_cosy_matrix(self, shifts_ppm: np.ndarray, j_matrix : np.ndarray, 
                                 grid_size: int = 256, ppm_range: Tuple[float, float] = (0.0, 10.0), 
                                 hwhm: float = 0.02) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
@@ -184,7 +187,7 @@ class JAXSpinHamiltonian:
 
         return ppm_grid, ppm_grid, cosy_matrix
 
-    def generate_2d_hsqc_matrix(self, h_shifts_ppm: np.ndarray, c_shifts_ppm: np.ndarray, 
+    def generate_2d_hsqc_matrix(self, h_shifts_ppm: np.ndarray, c_shifts_ppm : np.ndarray, 
                                 bond_matrix: np.ndarray = None, grid_size: int = 256, 
                                 h_range: Tuple[float, float] = (0.0, 10.0), 
                                 c_range: Tuple[float, float] = (0.0, 200.0), 

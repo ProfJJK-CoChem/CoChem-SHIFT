@@ -1,3 +1,5 @@
+import logging
+logger = logging.getLogger(__name__)
 """
 CoChem-SHIFT: Stage 1.0 - Ingestion Validator & Provenance Lock
 Filename: cochem_shift_ingest.py
@@ -8,6 +10,7 @@ import hashlib
 import os
 from typing import Dict, Any, Optional
 from pathlib import Path
+from cochem_base.config_loader import resolve_config_path
 
 # SHIFT-10: Handled optional nmrglue import gracefully
 HAS_NMRGLUE = False
@@ -18,19 +21,19 @@ except ImportError:
     ng = None
 
 class SHIFTIngestor:
-    def __init__(self, workspace_path: str):
+    def __init__(self, workspace_path: str) -> None:
         self.workspace = Path(workspace_path)
         self.registry_path = self.workspace / "cochem_shift_registry.json"
         self.config = self._load_system_config()
 
     def _load_system_config(self) -> Dict[str, Any]:
         """Loads the authoritative environment registry."""
-        config_file = Path("cochem_system_config.json")
+        config_file = resolve_config_path()
         if not config_file.exists():
             # Return basic configuration if not present
             return {"shift_engine": {"workspace_path": str(self.workspace)}}
         with open(config_file, "r") as f:
-            return json.load(f)
+            return json.loads(f.read())
 
     def _generate_hash(self, file_path: Path) -> str:
         """Generates SHA-256 hash for provenance tracking."""
@@ -99,9 +102,9 @@ class SHIFTIngestor:
                     if tier is None:
                         registry_entry["tier"] = self.determine_tier(True, False)
                 except Exception as e:
-                    print(f"⚠️ Warning: Failed to parse JCAMP-DX: {e}")
+                    logger.info(f"⚠️ Warning: Failed to parse JCAMP-DX: {e}")
             else:
-                print("⚠️ nmrglue package is missing. Storing file hash without metadata parsing.")
+                logger.info("⚠️ nmrglue package is missing. Storing file hash without metadata parsing.")
                 registry_entry["dx_hash"] = self._generate_hash(dx_p)
                 if tier is None:
                     registry_entry["tier"] = self.determine_tier(True, False)
@@ -111,5 +114,5 @@ class SHIFTIngestor:
         with open(self.registry_path, "w") as f:
             json.dump(registry_entry, f, indent=4)
         
-        print(f"✅ Ingestion successful. Tier assigned: {registry_entry['tier']}, Product Class: {registry_entry['product_class']}")
+        logger.info(f"✅ Ingestion successful. Tier assigned: {registry_entry['tier']}, Product Class: {registry_entry['product_class']}")
         return registry_entry
