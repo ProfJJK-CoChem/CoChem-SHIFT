@@ -37,6 +37,7 @@ def test_v4_orca_command_builder() -> None:
         # T3 Tier
         cmd_t3 = dispatcher._build_orca_command(tier="T3-pcSseg-3")
         assert "PBE0-D4 pcSseg-3" in cmd_t3
+        assert "TightSCF DEFGRID3" in cmd_t3
 
         # Deuterium Basis Upgrade
         cmd_d = dispatcher._build_orca_command(tier="T2-PBE0-D4", is_deuterium=True)
@@ -63,4 +64,5 @@ def test_dispatcher_tms_reference_generation() -> None:
         with open(os.path.join(tmpdir, "test_mol_nmr.inp"), "r") as f:
             content = f.read()
             assert "PBE0-D4 pcSseg-2" in content
+            assert "TightSCF DEFGRID3" in content
             assert "%mace" not in content

@@ -28,3 +28,15 @@ def test_determine_tier() -> None:
     assert ingestor.determine_tier(has_experimental=False, has_high_tier_tensors=False) == "T1-r2SCAN-3c"
     assert ingestor.determine_tier(has_experimental=True, has_high_tier_tensors=False) == "T2-PBE0-D4"
     assert ingestor.determine_tier(has_experimental=True, has_high_tier_tensors=True) == "T3-pcSseg-3"
+
+def test_pydantic_rejections() -> None:
+    from cochem_shift_ingest import ShiftRegistry
+    from pydantic import ValidationError
+    
+    with pytest.raises(ValidationError):
+        # Missing required mol_name
+        ShiftRegistry(xyz_hash="hash", tier="T1-r2SCAN-3c", product_class="PRODUCT_A", status="VALIDATED")
+        
+    with pytest.raises(ValidationError):
+        # Invalid type for ref_shielding
+        ShiftRegistry(mol_name="test", xyz_hash="hash", tier="T1-r2SCAN-3c", product_class="PRODUCT_A", status="VALIDATED", ref_shielding="invalid_string")

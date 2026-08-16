@@ -8,6 +8,7 @@ import os
 import json
 import tempfile
 import pytest
+from pathlib import Path
 import numpy as np
 from cochem_shift_tensor import SHIFTTensorExtractor
 
@@ -20,10 +21,16 @@ def test_tensor_extraction_and_averaging() -> None:
         ref_out = os.path.join(tmpdir, "TMS_reference_nmr.out")
         with open(ref_out, "w") as f:
             f.write("FINAL SINGLE POINT ENERGY -500.0\n")
+            f.write("CHEMICAL SHIELDING SUMMARY\n")
+            for i in range(1, 11):
+                f.write(f"{i} H 184.0 184.0\n")
             
         target_out = os.path.join(tmpdir, "target_nmr.out")
         with open(target_out, "w") as f:
             f.write("FINAL SINGLE POINT ENERGY -300.0\n")
+            f.write("CHEMICAL SHIELDING SUMMARY\n")
+            for i in range(1, 11):
+                f.write(f"{i} H 31.5 31.5\n")
             
         extractor = SHIFTTensorExtractor(tmpdir)
         out_npz = extractor.process_ensemble("target", "TMS_reference_nmr.out")
@@ -67,10 +74,16 @@ def test_tensor_provenance_tags_m_d_e() -> None:
             ref_out = os.path.join(tmpdir, "TMS_reference_nmr.out")
             with open(ref_out, "w") as f:
                 f.write("FINAL SINGLE POINT ENERGY -500.0\n")
+                f.write("CHEMICAL SHIELDING SUMMARY\n")
+                for i in range(1, 11):
+                    f.write(f"{i} H 184.0 184.0\n")
                 
             target_out = os.path.join(tmpdir, "target_nmr.out")
             with open(target_out, "w") as f:
                 f.write("FINAL SINGLE POINT ENERGY -300.0\n")
+                f.write("CHEMICAL SHIELDING SUMMARY\n")
+                for i in range(1, 11):
+                    f.write(f"{i} H 31.5 31.5\n")
                 
             extractor = SHIFTTensorExtractor(tmpdir)
             out_npz = extractor.process_ensemble("target", "TMS_reference_nmr.out")
@@ -86,6 +99,57 @@ def test_tensor_provenance_tags_m_d_e() -> None:
                 assert json_data["provenance_tag"] == expected_tag
                 assert json_data["chemical_shifts_provenance"][0] == expected_tag
                 assert json_data["chemical_shifts_tagged"][0]["provenance_tag"] == expected_tag
+
+def test_tensor_spoofing_fallback_removed() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        reg_path = os.path.join(tmpdir, "cochem_shift_registry.json")
+        with open(reg_path, "w") as f:
+            json.dump({"mol_name": "target", "tier": "T2-PBE0-D4", "product_class": "PRODUCT_A"}, f)
+            
+        ref_out = os.path.join(tmpdir, "TMS_reference_nmr.out")
+        with open(ref_out, "w") as f:
+            f.write("FINAL SINGLE POINT ENERGY -500.0\n")
+            # No tensors written, so it will fail parsing
+        
+        extractor = SHIFTTensorExtractor(tmpdir)
+        with pytest.raises(ValueError, match="Could not parse chemical shielding tensors"):
+            extractor.process_ensemble("target", "TMS_reference_nmr.out")
+
+def test_energy_spoofing_fallback_removed() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        reg_path = os.path.join(tmpdir, "cochem_shift_registry.json")
+        with open(reg_path, "w") as f:
+            json.dump({"mol_name": "target", "tier": "T2-PBE0-D4", "product_class": "PRODUCT_A"}, f)
+            
+        ref_out = os.path.join(tmpdir, "TMS_reference_nmr.out")
+        with open(ref_out, "w") as f:
+            f.write("FINAL SINGLE POINT ENERGY -500.0\n")
+            f.write("CHEMICAL SHIELDING SUMMARY\n")
+            for i in range(1, 11):
+                f.write(f"{i} H 184.0 184.0\n")
+
+        target_out = os.path.join(tmpdir, "target_nmr.out")
+        with open(target_out, "w") as f:
+            # Missing energy log line
+            f.write("CHEMICAL SHIELDING SUMMARY\n")
+            for i in range(1, 11):
+                f.write(f"{i} H 31.5 31.5\n")
+        
+        extractor = SHIFTTensorExtractor(tmpdir)
+        with pytest.raises(ValueError, match="Could not parse electronic energy"):
+            extractor.process_ensemble("target", "TMS_reference_nmr.out")
+
+def test_pydantic_rejections_tensor() -> None:
+    from cochem_shift_tensor import TensorExtractionResult
+    from pydantic import ValidationError
+    
+    with pytest.raises(ValidationError):
+        # Missing required status
+        TensorExtractionResult(conformer_count=1, temperature_K=298.15, tensor_file="file", json_file="file.json", provenance_tag="[D]")
+        
+    with pytest.raises(ValidationError):
+        # Invalid type for temperature_K
+        TensorExtractionResult(status="COMPLETED", conformer_count=1, temperature_K="invalid", tensor_file="file", json_file="file.json", provenance_tag="[D]")
 
 
 def calculate_artifact_sha256(filepath: str | Path) -> str:

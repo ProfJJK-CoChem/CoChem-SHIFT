@@ -15,7 +15,25 @@ import json
 import os
 from pathlib import Path
 from typing import Dict, Any, List, Tuple, Optional
+from pydantic import BaseModel, Field, field_validator
 
+class DispatchParams(BaseModel):
+    xyz_file: str = Field(..., description="Path to the target XYZ file")
+    solvent: str = Field("Chloroform", description="Implicit solvent name")
+    is_deuterium: bool = Field(False, description="Whether deuterium is present")
+    tier: str = Field("T2-PBE0-D4", description="Method Matrix v4 execution tier")
+
+    @field_validator("tier")
+    @classmethod
+    def validate_tier(cls, v: str) -> str:
+        valid_v4_tiers = {
+            "T1-r2SCAN-3c", "T2-PBE0-D4", "T3-pcSseg-3",
+            "T3-10s", "T3-1min", "T3-30min", "T1-1h", "T3-3h", "T3-12h", "T4-1d",
+            "T3C-3d", "T4C-1mo", "GOLD", "SILVER", "BRONZE"
+        }
+        if v not in valid_v4_tiers:
+            raise ValueError(f"Invalid tier '{v}'. Must be a valid Method Matrix v4 tier: {sorted(valid_v4_tiers)}")
+        return v
 # SHIFT-04: Complete atomic number dictionary for elements 1 to 118
 ATOMIC_NUMBERS = {
     'H': 1, 'He': 2, 'Li': 3, 'Be': 4, 'B': 5, 'C': 6, 'N': 7, 'O': 8, 'F': 9, 'Ne': 10,
@@ -113,7 +131,9 @@ class SHIFTPhysicsDispatcher:
         is_relativistic: bool = False,
         rel_hamiltonian: str = "ZORA",
         is_deuterium: bool = False,
-        use_calibrated_mace: bool = False
+        use_calibrated_mace: bool = False,
+        is_opt: bool = False,
+        frozen_monomer: bool = False
     ) -> str:
         """
         Constructs v4 Method Matrix ORCA NMR command string.
@@ -131,6 +151,11 @@ class SHIFTPhysicsDispatcher:
             basis = "pcSseg-2" if not is_deuterium else "pcSseg-3"
             base_cmd = f"! NMR GIAO PBE0-D4 {basis} def2/J"
 
+        base_cmd += " TightSCF DEFGRID3"
+
+        if is_opt:
+            base_cmd += " Opt"
+
         if is_relativistic:
             if rel_hamiltonian.upper() == "DKH2":
                 base_cmd += " DKH2 DKH-def2-TZVPP SARC/J"
@@ -139,6 +164,13 @@ class SHIFTPhysicsDispatcher:
 
         if use_calibrated_mace:
             base_cmd += "\n%mace\n  Active true\n  Model Thesseus_NMR\nend"
+
+        if is_opt:
+            opt_block = "\n%geom\n  InHess XTB2\n  TolE 1e-7\n  TolRMSG 3e-6\n  TolMaxG 1e-5\n  TolRMSD 5e-5\n  TolMaxD 1e-4\n"
+            if frozen_monomer:
+                opt_block += "  # Frozen-Monomer Protocol constraints\n"
+            opt_block += "end"
+            base_cmd += opt_block
 
         template = f"{base_cmd}\n\n%nmr\n  CalculateShielding true\n  CalculateSSCC true\nend\n"
         return template
@@ -150,7 +182,9 @@ class SHIFTPhysicsDispatcher:
         tier: str = "T2-PBE0-D4",
         rel_hamiltonian: str = "ZORA",
         is_deuterium: bool = False,
-        use_calibrated_mace: bool = False
+        use_calibrated_mace: bool = False,
+        is_opt: bool = False,
+        frozen_monomer: bool = False
     ) -> str:
         """
         Constructs the physics-aware ORCA command string based on the calculation tier and solvent block.
@@ -165,6 +199,11 @@ class SHIFTPhysicsDispatcher:
             basis = "pcSseg-2" if not is_deuterium else "pcSseg-3"
             base_cmd = f"! NMR GIAO PBE0-D4 {basis} def2/J"
 
+        base_cmd += " TightSCF DEFGRID3"
+        
+        if is_opt:
+            base_cmd += " Opt"
+
         if is_relativistic:
             if rel_hamiltonian.upper() == "DKH2":
                 base_cmd += " DKH2 DKH-def2-TZVPP SARC/J"
@@ -173,6 +212,13 @@ class SHIFTPhysicsDispatcher:
 
         if use_calibrated_mace:
             base_cmd += "\n%mace\n  Active true\n  Model Thesseus_NMR\nend"
+
+        if is_opt:
+            opt_block = "\n%geom\n  InHess XTB2\n  TolE 1e-7\n  TolRMSG 3e-6\n  TolMaxG 1e-5\n  TolRMSD 5e-5\n  TolMaxD 1e-4\n"
+            if frozen_monomer:
+                opt_block += "  # Frozen-Monomer Protocol constraints\n"
+            opt_block += "end"
+            base_cmd += opt_block
 
         if solvent_block:
             template = f"{base_cmd}\n\n{solvent_block}\n\n%nmr\n  CalculateShielding true\n  CalculateSSCC true\nend\n"
@@ -194,9 +240,19 @@ class SHIFTPhysicsDispatcher:
 
     def dispatch(self, xyz_file: str, solvent: str = "Chloroform", is_deuterium: bool = False) -> Dict[str, Any]:
         """Generates the input files for the target molecule and the internal reference."""
-        xyz_path = Path(xyz_file)
-        target_name = xyz_path.stem
         raw_tier = self.registry.get("tier", "T2-PBE0-D4")
+        
+        # Enforce Method Matrix v4 constraints via Pydantic
+        params = DispatchParams(
+            xyz_file=xyz_file,
+            solvent=solvent,
+            is_deuterium=is_deuterium,
+            tier=raw_tier
+        )
+        
+        xyz_path = Path(params.xyz_file)
+        target_name = xyz_path.stem
+        raw_tier = params.tier
         
         # Map legacy tier names if found
         tier_map = {"GOLD": "T3-pcSseg-3", "SILVER": "T2-PBE0-D4", "BRONZE": "T1-r2SCAN-3c"}

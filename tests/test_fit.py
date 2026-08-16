@@ -22,14 +22,8 @@ def test_fit_screening_bypass() -> None:
         np.savez(npz_path, avg_shifts=np.array([1.5, 3.2, 7.1]))
         
         fitter = SHIFTBayesianFitter(tmpdir)
-        out_json = fitter.execute_fitting()
-        
-        assert os.path.exists(out_json)
-        with open(out_json, "r") as f:
-            data = json.loads(f.read())
-            assert data["bypassed"] is True
-            assert len(data["optimized_shifts_ppm"]) == 3
-            assert data["provenance_tag"] == "[D]"
+        with pytest.raises(RuntimeError, match="No experimental JCAMP-DX data found"):
+            fitter.execute_fitting()
 
 def test_template_anchoring() -> None:
     ref_shielding = 184.0

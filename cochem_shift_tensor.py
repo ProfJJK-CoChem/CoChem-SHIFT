@@ -16,6 +16,15 @@ import re
 import numpy as np
 from pathlib import Path
 from typing import Dict, List, Any, Tuple, Optional
+from pydantic import BaseModel, ValidationError
+
+class TensorExtractionResult(BaseModel):
+    status: str
+    conformer_count: int
+    temperature_K: float
+    tensor_file: str
+    json_file: str
+    provenance_tag: str
 
 # Optional cclib dependency handling
 HAS_CCLIB = False
@@ -137,13 +146,7 @@ class SHIFTTensorExtractor:
                 import logging
                 logging.getLogger(__name__).debug("ORCA log tensor parsing exception (%s).", err)
 
-        # Realistic default shielding values for testing/fallback (e.g. 10 atoms: 1 Si, 4 C, 5 H)
-        default_shieldings = np.array([380.0, 184.0, 184.0, 184.0, 184.0, 31.5, 31.5, 31.5, 31.5, 31.5])
-        tensors = np.zeros((10, 3, 3))
-        for i in range(10):
-            val = default_shieldings[i]
-            tensors[i] = np.diag([val, val, val])
-        return tensors
+        raise ValueError(f"Could not parse chemical shielding tensors from ORCA property or output file: {prop_file}")
 
     def _compute_boltzmann_weights(self, energies: np.ndarray) -> np.ndarray:
         """Calculates Boltzmann populations at 298.15 K."""
@@ -306,8 +309,7 @@ class SHIFTTensorExtractor:
         logger.info(f"✅ Boltzmann averaging complete. Saved to {output_file.name} and {json_output_file.name}")
         
         # Update Registry
-        self.registry["provenance_tag"] = prov_tag
-        self.registry["tensor_extraction"] = {
+        extraction_data = {
             "status": "COMPLETED",
             "conformer_count": len(conformer_files),
             "temperature_K": STD_TEMP,
@@ -315,6 +317,17 @@ class SHIFTTensorExtractor:
             "json_file": str(json_output_file.name),
             "provenance_tag": prov_tag
         }
+        
+        # Pydantic validation
+        try:
+            validated_data = TensorExtractionResult(**extraction_data)
+            self.registry["tensor_extraction"] = validated_data.model_dump()
+        except ValidationError as e:
+            logger.error(f"Pydantic validation failed for TensorExtractionResult: {e}")
+            raise ValueError(f"Invalid tensor extraction result: {e}")
+            
+        self.registry["provenance_tag"] = prov_tag
+        
         with open(self.registry_path, "w") as f:
             json.dump(self.registry, f, indent=4)
             

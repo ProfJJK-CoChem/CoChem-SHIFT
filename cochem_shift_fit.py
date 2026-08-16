@@ -164,31 +164,15 @@ class SHIFTBayesianFitter:
         """Initializes the MCMC ensemble, runs the burn-in, and samples the posterior."""
         logger.info("🧬 Initializing MCMC Bayesian Optimization...")
         
-        # SHIFT-17: Raise explicit RuntimeError if JAX missing
-        if not HAS_JAX:
-            raise RuntimeError("JAX and JAXSpinHamiltonian are required for Bayesian fitting. Please install JAX.")
-            
         tier = self.registry.get("tier", "T1-r2SCAN-3c")
         tier_upper = tier.upper()
         # Bypass MCMC completely when experimental spectrum is absent or tier is T1 / BRONZE
         if "T1" in tier_upper or "BRONZE" in tier_upper or "dx_hash" not in self.registry:
-            logger.info("⚠️ No experimental JCAMP-DX data found (Screening tier). Bypassing Bayesian fit.")
-            logger.info("➡️ Emitting pure theoretical spectrum parameters directly.")
-            avg_shifts, initial_j = self._load_theoretical_priors()
-            results = {
-                "product_class": self.registry.get("product_class", "PRODUCT_A"),
-                "nmr_tier": tier,
-                "provenance_tag": "[D]",
-                "optimized_shifts_ppm": avg_shifts.tolist(),
-                "optimized_j_couplings_hz": initial_j[np.triu_indices(len(avg_shifts), k=1)].tolist(),
-                "mcmc_steps": 0,
-                "acceptance_fraction": 1.0,
-                "bypassed": True
-            }
-            output_file = self.workspace / "optimized_parameters.json"
-            with open(output_file, "w") as f:
-                json.dump(results, f, indent=4)
-            return output_file
+            raise RuntimeError("No experimental JCAMP-DX data found (Screening tier or missing data). Bayesian fitting requires experimental data. Use TheoreticalSpectrumEmitter instead.")
+
+        # SHIFT-17: Raise explicit RuntimeError if JAX missing
+        if not HAS_JAX:
+            raise RuntimeError("JAX and JAXSpinHamiltonian are required for Bayesian fitting. Please install JAX.")
 
 
         avg_shifts, initial_j = self._load_theoretical_priors()
@@ -206,13 +190,11 @@ class SHIFTBayesianFitter:
         rng = np.random.default_rng(42)
         pos = theta_0 + 1e-4 * rng.standard_normal((n_walkers, n_dim))
         
-        # Ingest real experimental target spectrum or calculate exact GIAO NMR transitions from theoretical prior
+        # Ingest real experimental target spectrum
         exp_spec_file = self.workspace / "exp_spectrum.npy"
-        if exp_spec_file.exists():
-            exp_spectrum = np.load(exp_spec_file)
-        else:
-            eigenvalues, _ = self.engine.solve_hamiltonian(jnp.array(avg_shifts), jnp.array(initial_j))
-            exp_spectrum = np.abs(np.diff(np.array(eigenvalues)))
+        if not exp_spec_file.exists():
+            raise FileNotFoundError(f"Experimental spectrum file {exp_spec_file} not found. Cannot proceed with Bayesian fitting.")
+        exp_spectrum = np.load(exp_spec_file)
         
         import emcee
         backend_path = self.workspace / "mcmc_chains.h5"

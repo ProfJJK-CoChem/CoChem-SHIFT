@@ -11,6 +11,18 @@ import os
 from typing import Dict, Any, Optional
 from pathlib import Path
 from cochem_base.config_loader import resolve_config_path
+from pydantic import BaseModel, ValidationError
+
+class ShiftRegistry(BaseModel):
+    mol_name: str
+    xyz_hash: str
+    tier: str
+    product_class: str
+    status: str
+    parent_exp_shifts: Optional[Dict[str, float]] = None
+    parent_calc_shieldings: Optional[Dict[str, float]] = None
+    ref_shielding: Optional[float] = None
+    dx_hash: Optional[str] = None
 
 # SHIFT-10: Handled optional nmrglue import gracefully
 HAS_NMRGLUE = False
@@ -110,9 +122,16 @@ class SHIFTIngestor:
                     registry_entry["tier"] = self.determine_tier(True, False)
 
         # 4. Save to Registry
+        try:
+            validated_entry = ShiftRegistry(**registry_entry)
+            registry_dict = validated_entry.model_dump(exclude_none=True)
+        except ValidationError as e:
+            logger.error(f"Pydantic validation failed for ShiftRegistry: {e}")
+            raise ValueError(f"Invalid registry data: {e}")
+
         self.workspace.mkdir(parents=True, exist_ok=True)
         with open(self.registry_path, "w") as f:
-            json.dump(registry_entry, f, indent=4)
+            json.dump(registry_dict, f, indent=4)
         
-        logger.info(f"✅ Ingestion successful. Tier assigned: {registry_entry['tier']}, Product Class: {registry_entry['product_class']}")
-        return registry_entry
+        logger.info(f"✅ Ingestion successful. Tier assigned: {registry_dict['tier']}, Product Class: {registry_dict['product_class']}")
+        return registry_dict
