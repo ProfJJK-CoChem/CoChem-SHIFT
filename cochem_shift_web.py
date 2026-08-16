@@ -17,8 +17,7 @@ def kill_zombie_processes() -> None:
             if any(target in name for target in target_procs):
                 proc.terminate()
         except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-            pass
-
+            raise NotImplementedError("Implementation pending")
 atexit.register(kill_zombie_processes)
 
 st.title("🔬 CoChem-SHIFT Control Panel")

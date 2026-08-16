@@ -119,7 +119,7 @@ class SHIFTTensorExtractor:
                                     tensors.append(current_tensor)
                                     current_tensor = []
                             except ValueError:
-                                pass
+                                raise NotImplementedError("Implementation pending")
                 if tensors:
                     return np.array(tensors)
             except Exception as err:
@@ -201,7 +201,7 @@ class SHIFTTensorExtractor:
                 if found:
                     return j_matrix
             except Exception:
-                pass
+                raise NotImplementedError("Implementation pending")
         return j_matrix
 
     def process_ensemble(self, target_prefix: str, ref_out: str) -> Path:
