@@ -2,23 +2,13 @@ import streamlit as st
 import subprocess
 import os
 import sys
-import psutil
-import atexit
+
 import hashlib
 from pathlib import Path
 
 st.set_page_config(page_title="CoChem-SHIFT - Native Pipeline UI", layout="wide")
 
-def kill_zombie_processes() -> None:
-    target_procs = ['orca', 'xtb', 'mpi', 'crest']
-    for proc in psutil.process_iter(['name']):
-        try:
-            name = proc.info['name'].lower()
-            if any(target in name for target in target_procs):
-                proc.terminate()
-        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-            raise NotImplementedError("Implementation pending")
-atexit.register(kill_zombie_processes)
+
 
 st.title("🔬 CoChem-SHIFT Control Panel")
 st.markdown("This UI executes raw, heavy mathematical payloads natively.")
@@ -42,4 +32,3 @@ if st.button("🚀 Execute Default Pipeline"):
             st.error("Native execution requires an active task queue and worker nodes. The mock pipeline execution has been removed to eradicate spoofing.")
         except Exception as e:
             st.error(f"Pipeline crashed during physical execution: {str(e)}")
-            kill_zombie_processes()
